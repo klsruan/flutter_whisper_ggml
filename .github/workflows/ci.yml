@@ -1,0 +1,209 @@
+name: CI - all platforms
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.38.6
+  EMSCRIPTEN_VERSION: 4.0.7
+
+jobs:
+  quality:
+    name: Analyze, test and validate package
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Resolve dependencies
+        run: |
+          flutter pub get
+          flutter pub get --directory example
+      - name: Validate GitHub Actions workflows
+        shell: bash
+        run: |
+          curl -fsSLO \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint_1.7.12_linux_amd64.tar.gz' \
+            | sha256sum --check
+          tar -xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
+          ./actionlint .github/workflows/*.yml
+      - name: Analyze package and example
+        run: |
+          flutter analyze
+          (cd example && flutter analyze)
+      - name: Run package and example tests
+        run: |
+          flutter test
+          (cd example && flutter test)
+      - name: Validate pub.dev archive
+        run: dart pub publish --dry-run
+
+  android:
+    name: Android ARM64 and x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Resolve dependencies
+        run: flutter pub get --directory example
+      - name: Build release APK
+        working-directory: example
+        run: >-
+          flutter build apk --release
+          --target-platform android-arm64,android-x64
+      - name: Verify native Android libraries
+        run: |
+          unzip -l example/build/app/outputs/flutter-apk/app-release.apk > apk-files.txt
+          grep -q 'lib/arm64-v8a/libflutter_whisper_plugin.so' apk-files.txt
+          grep -q 'lib/x86_64/libflutter_whisper_plugin.so' apk-files.txt
+
+  linux:
+    name: Linux ${{ matrix.backend }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [CPU, VULKAN]
+    env:
+      FLUTTER_WHISPER_GPU_BACKEND: ${{ matrix.backend }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+            libomp-dev libvulkan-dev glslc spirv-headers spirv-tools
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Resolve dependencies
+        run: flutter pub get --directory example
+      - name: Build Linux release bundle
+        working-directory: example
+        run: flutter build linux --release
+      - name: Verify native Linux library
+        run: |
+          test -s example/build/linux/x64/release/bundle/lib/libflutter_whisper_plugin.so
+          nm -D example/build/linux/x64/release/bundle/lib/libflutter_whisper_plugin.so \
+            | grep -q ' fw_create'
+
+  windows:
+    name: Windows x64 CPU
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      FLUTTER_WHISPER_GPU_BACKEND: CPU
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Resolve dependencies
+        run: flutter pub get --directory example
+      - name: Build Windows release bundle
+        working-directory: example
+        run: flutter build windows --release
+      - name: Verify Windows executable and native bridge
+        shell: pwsh
+        run: |
+          $release = 'example/build/windows/x64/runner/Release'
+          if (-not (Test-Path "$release/flutter_whisper_ggml_example.exe")) {
+            throw 'Windows example executable was not generated.'
+          }
+          if (-not (Get-ChildItem $release -Filter 'flutter_whisper_plugin.dll' -Recurse)) {
+            throw 'flutter_whisper_plugin.dll was not bundled.'
+          }
+
+  web:
+    name: Web and whisper.cpp WebAssembly
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Cache Emscripten SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/emsdk
+          key: emsdk-${{ runner.os }}-${{ env.EMSCRIPTEN_VERSION }}
+      - name: Install Emscripten and rebuild whisper.cpp WASM
+        shell: bash
+        run: |
+          EMSDK_DIR="${RUNNER_TOOL_CACHE}/emsdk"
+          if [[ ! -d "${EMSDK_DIR}/.git" ]]; then
+            git clone --depth 1 https://github.com/emscripten-core/emsdk.git "${EMSDK_DIR}"
+          fi
+          cd "${EMSDK_DIR}"
+          ./emsdk install "${EMSCRIPTEN_VERSION}"
+          ./emsdk activate "${EMSCRIPTEN_VERSION}"
+          source ./emsdk_env.sh
+          cd "${GITHUB_WORKSPACE}"
+          bash tool/build_web_wasm.sh Release
+          test -s assets/web/flutter_whisper.js
+          test -s assets/web/flutter_whisper.wasm
+      - name: Resolve Web dependencies
+        run: |
+          flutter pub get
+          flutter pub get --directory example
+      - name: Run browser-compatible tests
+        run: flutter test --platform chrome test/result_formatters_test.dart
+      - name: Build Web release
+        working-directory: example
+        run: flutter build web --release
+      - name: Verify Web deployment bundle
+        run: |
+          WEB_PLUGIN_ASSETS=example/build/web/assets/packages/flutter_whisper_ggml/assets/web
+          test -s "${WEB_PLUGIN_ASSETS}/flutter_whisper.js"
+          test -s "${WEB_PLUGIN_ASSETS}/flutter_whisper.wasm"
+          test -s "${WEB_PLUGIN_ASSETS}/flutter_whisper_worker.js"
+          grep -q 'Cross-Origin-Opener-Policy' example/build/web/_headers
+
+  apple:
+    name: iOS and macOS
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Resolve dependencies
+        run: flutter pub get --directory example
+      - name: Build iOS Simulator
+        working-directory: example
+        run: flutter build ios --simulator --debug --no-codesign
+      - name: Build unsigned iOS ARM64 bundle
+        working-directory: example
+        run: flutter build ios --release --no-codesign
+      - name: Build macOS release bundle
+        working-directory: example
+        run: flutter build macos --release

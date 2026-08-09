@@ -1,0 +1,33 @@
+# Repository/CI metadata
+.git/
+.github/
+.idea/
+.vscode/
+*.iml
+
+# Local Flutter and native build output
+.dart_tool/
+**/.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+build/
+**/build/
+coverage/
+**/coverage/
+.gradle/
+**/.gradle/
+.cxx/
+**/.cxx/
+Pods/
+**/Pods/
+.symlinks/
+**/.symlinks/
+**/flutter/ephemeral/
+*.log
+*.tmp
+
+# Upstream fixtures and documentation not needed by plugin compilation
+whisper/v1.9.2/samples/
+whisper/v1.9.2/media/
