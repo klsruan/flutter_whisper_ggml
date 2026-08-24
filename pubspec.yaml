@@ -1,6 +1,6 @@
 name: flutter_whisper_ggml
 description: Offline speech recognition for Flutter powered by whisper.cpp.
-version: 0.0.1
+version: 0.0.2
 repository: https://github.com/klsruan/flutter_whisper_ggml
 
 environment:
