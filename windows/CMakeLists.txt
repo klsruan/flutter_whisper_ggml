@@ -15,6 +15,10 @@ enable_language(C)
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
 cmake_policy(VERSION 3.14...3.25)
+if(POLICY CMP0194)
+  cmake_policy(SET CMP0194 NEW)
+  set(CMAKE_POLICY_DEFAULT_CMP0194 NEW)
+endif()
 
 # This value is used when generating builds using this plugin, so it must
 # not be changed
@@ -44,30 +48,19 @@ set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
-set(FLUTTER_WHISPER_GPU_BACKEND "AUTO" CACHE STRING
-  "GPU backend to compile: AUTO, CPU, CUDA, or VULKAN")
+set(FLUTTER_WHISPER_GPU_BACKEND "CPU" CACHE STRING
+  "GPU backend to compile: CPU, CUDA, or VULKAN")
 if(DEFINED ENV{FLUTTER_WHISPER_GPU_BACKEND})
   string(TOUPPER "$ENV{FLUTTER_WHISPER_GPU_BACKEND}" _FW_GPU_BACKEND_ENV)
   set(FLUTTER_WHISPER_GPU_BACKEND "${_FW_GPU_BACKEND_ENV}" CACHE STRING
     "GPU backend to compile: CPU, CUDA, or VULKAN" FORCE)
 endif()
-set_property(CACHE FLUTTER_WHISPER_GPU_BACKEND PROPERTY STRINGS AUTO CPU CUDA VULKAN)
+# Migrate build directories created by versions whose cached default was AUTO.
 if(FLUTTER_WHISPER_GPU_BACKEND STREQUAL "AUTO")
-  if(WIN32 AND NOT DEFINED ENV{VULKAN_SDK})
-    file(GLOB _FW_VULKAN_SDKS LIST_DIRECTORIES TRUE "C:/VulkanSDK/*")
-    if(_FW_VULKAN_SDKS)
-      list(SORT _FW_VULKAN_SDKS COMPARE NATURAL ORDER DESCENDING)
-      list(GET _FW_VULKAN_SDKS 0 _FW_VULKAN_SDK)
-      set(ENV{VULKAN_SDK} "${_FW_VULKAN_SDK}")
-      list(PREPEND CMAKE_PREFIX_PATH "${_FW_VULKAN_SDK}")
-    endif()
-  endif()
-  if(DEFINED ENV{VULKAN_SDK})
-    set(FLUTTER_WHISPER_GPU_BACKEND "VULKAN")
-  else()
-    set(FLUTTER_WHISPER_GPU_BACKEND "CPU")
-  endif()
+  set(FLUTTER_WHISPER_GPU_BACKEND "CPU" CACHE STRING
+    "GPU backend to compile: CPU, CUDA, or VULKAN" FORCE)
 endif()
+set_property(CACHE FLUTTER_WHISPER_GPU_BACKEND PROPERTY STRINGS CPU CUDA VULKAN)
 if(FLUTTER_WHISPER_GPU_BACKEND STREQUAL "CUDA")
   set(GGML_CUDA ON CACHE BOOL "" FORCE)
   set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
@@ -88,6 +81,19 @@ add_subdirectory(
   "${FLUTTER_WHISPER_CPP_DIR}"
   "${CMAKE_CURRENT_BINARY_DIR}/whisper_cpp"
   EXCLUDE_FROM_ALL)
+
+# whisper.cpp and GGML are vendored third-party sources. Their conversion and
+# deprecation warnings are not actionable by plugin consumers and can produce
+# thousands of MSVC lines. Keep warnings enabled for the Flutter bridge itself.
+if(MSVC)
+  foreach(_FW_THIRD_PARTY_TARGET
+      whisper ggml ggml-base ggml-cpu ggml-cuda ggml-vulkan)
+    if(TARGET ${_FW_THIRD_PARTY_TARGET})
+      target_compile_options(${_FW_THIRD_PARTY_TARGET} PRIVATE
+        /W0 /wd4244 /wd4267)
+    endif()
+  endforeach()
+endif()
 if(_FLUTTER_WHISPER_INSTALL_PREFIX_WAS_DEFAULT)
   set(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT TRUE)
 endif()

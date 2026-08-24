@@ -318,17 +318,23 @@ enumeration currently exposes only the WebAssembly CPU runtime.
 
 ### Windows backend
 
-`AUTO` selects Vulkan when a usable Vulkan SDK is detected at build time and
-falls back to CPU otherwise.
+CPU is the default backend so normal consumer builds do not unexpectedly probe
+or compile a GPU SDK. CUDA and Vulkan are explicit build-time choices. Build
+directories created by older versions with an `AUTO` cache value are migrated
+to CPU.
 
 ```powershell
-$env:FLUTTER_WHISPER_GPU_BACKEND='CPU'     # CPU, CUDA, VULKAN or AUTO
+$env:FLUTTER_WHISPER_GPU_BACKEND='CPU'     # CPU, CUDA or VULKAN
 flutter build windows --release
 ```
 
 CUDA requires the CUDA Toolkit. Vulkan requires a Vulkan SDK and shader compiler
 during the native build. Backend selection changes what is compiled; it cannot
 enable a GPU in an already-built binary.
+
+The plugin uses its pinned `whisper/v1.9.2` source tree by default. Maintainers
+may set `FLUTTER_WHISPER_CPP_DIR` to test another checkout, but application
+consumers do not need that environment variable.
 
 ### Linux backend
 

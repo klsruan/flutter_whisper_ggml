@@ -4,7 +4,22 @@ All notable changes to `flutter_whisper_ggml` are documented here. This project
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.1] - 2026-08-08
+## [Unreleased]
+
+### 0.0.2
+
+- Pinned the local whisper.cpp v1.9.2 source tree as the default Windows build
+  input, removing the requirement for an external checkout.
+- Changed the Windows build default to CPU for reproducible consumer builds;
+  CUDA and Vulkan remain explicit opt-in backends.
+- Migrated stale `AUTO` CMake caches to CPU and added clearer backend
+  validation.
+- Applied modern CMake policy handling for ASM detection and scoped noisy MSVC
+  conversion warnings to vendored whisper.cpp/GGML targets.
+- Fixed model initialization and disposal paths used by release-mode Windows
+  applications after a previous transcription was interrupted.
+
+## 0.0.1
 
 Initial beta release.
 
