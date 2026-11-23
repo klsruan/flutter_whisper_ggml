@@ -47,7 +47,7 @@ xcodebuild -create-xcframework \
   -library "$build/iphonesimulator/$library" \
   -output "$output/ios/$name.xcframework"
 xcodebuild -create-xcframework \
-  -library "$build/macos/$library" \
+  -library "$build/macosx/$library" \
   -output "$output/macos/$name.xcframework"
 for platform in ios macos; do
   if [[ -e "$root/$platform/$name.xcframework" ]]; then
