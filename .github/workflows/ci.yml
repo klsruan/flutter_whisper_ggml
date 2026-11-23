@@ -367,18 +367,19 @@ jobs:
       - name: Stage Flutter package files
         shell: bash
         run: |
-          mkdir -p build/pub-package
+          # Keep pub's file discovery outside the checkout and its ignore rules.
+          mkdir -p "$RUNNER_TEMP/pub-package"
           git ls-files -z -- . ':!.github' ':!src' ':!cmake' ':!web' ':!tool' ':!windows/*.cpp' ':!windows/flutter_whisper_plugin.h' ':!windows/test' ':!test/ci_cd_structure_test.dart' ':!test/native_platform_structure_test.dart' ':!windows/include/flutter_whisper/flutter_whisper_bridge.h' \
             | tar --null -T - -cf - \
-            | tar -xf - -C build/pub-package
+            | tar -xf - -C "$RUNNER_TEMP/pub-package"
       - uses: actions/download-artifact@v4
         with:
           pattern: whisper-*
-          path: build/pub-package
+          path: ${{ runner.temp }}/pub-package
           merge-multiple: true
       - name: Validate pub.dev archive
         shell: bash
-        working-directory: build/pub-package
+        working-directory: ${{ runner.temp }}/pub-package
         run: |
           for file in \
             windows/prebuilt/amd64/flutter_whisper_plugin.{dll,lib} \
@@ -398,7 +399,8 @@ jobs:
           done
       - name: Archive package for publishing
         run: |
-          tar -czf build/flutter_whisper_ggml-pub-package.tar.gz -C build/pub-package \
+          mkdir -p build
+          tar -czf build/flutter_whisper_ggml-pub-package.tar.gz -C "$RUNNER_TEMP/pub-package" \
             --exclude=.dart_tool --exclude=pubspec.lock .
       - uses: actions/upload-artifact@v4
         with:

@@ -51,6 +51,7 @@ void main() {
     expect(ci, contains(r'"$FLUTTER_WHISPER_CPP_DIR"'));
     expect(ci, contains("java-version: '17'"));
     expect(ci, contains('dart pub publish --dry-run'));
+    expect(ci, contains(r'working-directory: ${{ runner.temp }}/pub-package'));
     expect(ci, contains('flutter_whisper_ggml-pub-package'));
     expect(File('LICENSE-whisper.cpp').existsSync(), isTrue);
     expect(File('LICENSE').readAsStringSync(), contains('2026 Ruan Dias'));
