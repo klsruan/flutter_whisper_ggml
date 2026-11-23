@@ -9,3 +9,8 @@ Future<String> prepareModel(
 }) => throw UnsupportedError(
   'Automatic Whisper model downloads are unsupported on this platform.',
 );
+
+Future<void> clearWebModelCache() async =>
+    throw UnsupportedError('The browser model cache is available only on Web.');
+
+void releasePreparedModel(String path) {}

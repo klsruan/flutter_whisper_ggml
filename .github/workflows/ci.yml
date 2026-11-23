@@ -169,6 +169,14 @@ jobs:
           flutter build linux --release
           cmp ../linux/prebuilt/x86_64/${{ matrix.backend }}/libflutter_whisper_plugin.so \
             build/linux/x64/release/bundle/lib/libflutter_whisper_plugin.so
+      - name: Test packaged Linux runtime with real audio
+        if: matrix.backend == 'CPU'
+        shell: bash
+        run: |
+          bash tool/download_native_smoke_fixtures.sh
+          flutter pub get
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/example/build/linux/x64/release/bundle/lib"
+          flutter test tool/native_whisper_smoke_test.dart
       - uses: actions/upload-artifact@v4
         with:
           name: whisper-linux-${{ matrix.backend }}
@@ -229,6 +237,16 @@ jobs:
           $bundled = Get-FileHash build/windows/x64/runner/Release/flutter_whisper_plugin.dll
           $prebuilt = Get-FileHash ../windows/prebuilt/amd64/flutter_whisper_plugin.dll
           if ($bundled.Hash -ne $prebuilt.Hash) { throw 'The prebuilt DLL was not bundled.' }
+      - name: Test packaged Windows runtime with real audio
+        shell: pwsh
+        run: |
+          bash tool/download_native_smoke_fixtures.sh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter pub get
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bundle = (Resolve-Path example/build/windows/x64/runner/Release).Path
+          $env:PATH = "$bundle;$env:PATH"
+          flutter test tool/native_whisper_smoke_test.dart
       - uses: actions/upload-artifact@v4
         with:
           name: whisper-windows
@@ -277,6 +295,8 @@ jobs:
           flutter pub get --directory example
       - name: Run browser-compatible tests
         run: flutter test --platform chrome test/result_formatters_test.dart
+      - name: Transcribe real audio in Chrome
+        run: bash tool/test_web_wasm.sh
       - name: Build Web release
         working-directory: example
         run: flutter build web --release
@@ -340,6 +360,8 @@ jobs:
               binary="$binary.debug.dylib"
             fi
             nm -gU "$binary" | grep " _fw_create$"
+            nm -gU "$binary" | grep " _fw_prepare_transcription$"
+            nm -gU "$binary" | grep " _fw_transcribe_v3$"
             nm -gU "$binary" | grep " _fw_last_error$"
           done
       - name: Stage Apple XCFrameworks
@@ -390,7 +412,7 @@ jobs:
             test -s "$file"
           done
           test ! -e whisper
-          flutter pub get
+          flutter pub get --no-example
           dart pub publish --dry-run | tee ../pub-dry-run.txt
           for file in \
             flutter_whisper_plugin.dll flutter_whisper_plugin.lib libflutter_whisper_plugin.so \
@@ -401,7 +423,8 @@ jobs:
         run: |
           mkdir -p build
           tar -czf build/flutter_whisper_ggml-pub-package.tar.gz -C "$RUNNER_TEMP/pub-package" \
-            --exclude=.dart_tool --exclude=pubspec.lock .
+            --exclude=.dart_tool --exclude=pubspec.lock --exclude='.flutter-plugins*' \
+            --exclude='*/flutter/ephemeral' --exclude='*/Flutter/ephemeral' .
       - uses: actions/upload-artifact@v4
         with:
           name: flutter_whisper_ggml-pub-package

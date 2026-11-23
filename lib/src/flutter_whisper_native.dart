@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
@@ -14,9 +15,21 @@ typedef _CreateD = Pointer<Void> Function(Pointer<Utf8>, int, int, int);
 typedef _VoidN = Void Function(Pointer<Void>);
 typedef _VoidD = void Function(Pointer<Void>);
 typedef _TranscribeN =
-    Int32 Function(Pointer<Void>, Pointer<Float>, Int32, Pointer<_OptionsV2>);
+    Int32 Function(
+      Pointer<Void>,
+      Pointer<Float>,
+      Int32,
+      Pointer<_OptionsV2>,
+      Pointer<NativeFunction<_ProgressN>>,
+    );
 typedef _TranscribeD =
-    int Function(Pointer<Void>, Pointer<Float>, int, Pointer<_OptionsV2>);
+    int Function(
+      Pointer<Void>,
+      Pointer<Float>,
+      int,
+      Pointer<_OptionsV2>,
+      Pointer<NativeFunction<_ProgressN>>,
+    );
 typedef _Int1N = Int32 Function(Pointer<Void>);
 typedef _Int1D = int Function(Pointer<Void>);
 typedef _Int2N = Int32 Function(Pointer<Void>, Int32);
@@ -120,6 +133,7 @@ final class FlutterWhisperNative implements WhisperBackend {
   final Pointer<Void> _context;
   final _Bindings _bindings;
   bool _disposed = false;
+  bool _transcribing = false;
 
   static List<WhisperDevice> get availableDevices {
     final bindings = _Bindings.open();
@@ -190,40 +204,62 @@ final class FlutterWhisperNative implements WhisperBackend {
     if (samples.isEmpty) {
       throw const WhisperException('Audio samples cannot be empty.');
     }
-    final address = _context.address;
-    final callback = onProgress == null
-        ? null
-        : NativeCallable<_ProgressN>.listener(
-            (int progress) => onProgress(progress.clamp(0, 100)),
-          );
-    final callbackAddress = callback?.nativeFunction.address ?? 0;
+    if (_transcribing) {
+      throw StateError('A native transcription is already in progress.');
+    }
+    final events = onProgress != null || onSegment != null
+        ? ReceivePort()
+        : null;
     final job = _TranscriptionJob(
-      contextAddress: address,
+      contextAddress: _context.address,
       samples: samples,
       config: config,
-      progressCallbackAddress: callbackAddress,
+      events: events?.sendPort,
+      reportProgress: onProgress != null,
+      reportSegments: onSegment != null,
     );
+    _bindings.prepareTranscription(_context);
+    _transcribing = true;
     try {
-      final result = await Isolate.run(job.run);
-      for (final segment in result.segments) {
-        onSegment?.call(segment);
-      }
-      return result;
+      final inference = Isolate.run(job.run);
+      if (events == null) return await inference;
+      final delivery = events.takeWhile((event) => event != null).forEach((
+        event,
+      ) {
+        if (event is int) {
+          onProgress?.call(event.clamp(0, 100));
+        } else if (event is WhisperSegment) {
+          onSegment?.call(event);
+        }
+      });
+      final results = await Future.wait<Object?>([
+        inference.then<WhisperResult>(
+          (result) => result,
+          onError: (Object error, StackTrace stack) {
+            events.close();
+            Error.throwWithStackTrace(error, stack);
+          },
+        ),
+        delivery,
+      ]);
+      return results.first as WhisperResult;
     } finally {
-      callback?.close();
+      events?.close();
+      _transcribing = false;
+      if (_disposed) _bindings.destroy(_context);
     }
   }
 
   @override
   void cancel() {
-    if (!_disposed) _bindings.cancel(_context);
+    if (!_disposed && _transcribing) _bindings.cancel(_context);
   }
 
   @override
   void dispose() {
     if (!_disposed) {
       _disposed = true;
-      _bindings.destroy(_context);
+      if (!_transcribing) _bindings.destroy(_context);
     }
   }
 }
@@ -242,16 +278,25 @@ final class _TranscriptionJob {
     required this.contextAddress,
     required this.samples,
     required this.config,
-    required this.progressCallbackAddress,
+    required this.events,
+    required this.reportProgress,
+    required this.reportSegments,
   });
 
   final int contextAddress;
   final Float32List samples;
   final WhisperTranscribeConfig config;
-  final int progressCallbackAddress;
+  final SendPort? events;
+  final bool reportProgress;
+  final bool reportSegments;
 
-  WhisperResult run() =>
-      _transcribe(contextAddress, samples, config, progressCallbackAddress);
+  WhisperResult run() {
+    try {
+      return _transcribe(this);
+    } finally {
+      events?.send(null);
+    }
+  }
 }
 
 int _load(String path, WhisperModelConfig config) {
@@ -273,20 +318,19 @@ int _load(String path, WhisperModelConfig config) {
   }
 }
 
-WhisperResult _transcribe(
-  int address,
-  Float32List samples,
-  WhisperTranscribeConfig config,
-  int progressCallbackAddress,
-) {
+WhisperResult _transcribe(_TranscriptionJob job) {
   final b = _Bindings.open();
-  final context = Pointer<Void>.fromAddress(address);
+  final context = Pointer<Void>.fromAddress(job.contextAddress);
+  final samples = job.samples;
+  final config = job.config;
   final pcm = calloc<Float>(samples.length);
   final options = calloc<_OptionsV2>();
   final language = config.language.toNativeUtf8();
   final prompt = config.initialPrompt?.toNativeUtf8();
   final regex = config.suppressRegex?.toNativeUtf8();
   final vadPath = config.vad?.modelPath.toNativeUtf8();
+  NativeCallable<_ProgressN>? progressCallback;
+  NativeCallable<_ProgressN>? segmentCallback;
   try {
     pcm.asTypedList(samples.length).setAll(0, samples);
     final o = options.ref;
@@ -327,37 +371,33 @@ WhisperResult _transcribe(
       ..initialPrompt = prompt ?? nullptr
       ..suppressRegex = regex ?? nullptr
       ..vadModelPath = vadPath ?? nullptr;
-    o.progressCallback = progressCallbackAddress == 0
-        ? nullptr
-        : Pointer<NativeFunction<_ProgressN>>.fromAddress(
-            progressCallbackAddress,
-          );
-    final code = b.transcribe(context, pcm, samples.length, options);
+    if (job.reportProgress) {
+      progressCallback = NativeCallable<_ProgressN>.isolateLocal(
+        (int progress) => job.events!.send(progress),
+      );
+    }
+    if (job.reportSegments) {
+      segmentCallback = NativeCallable<_ProgressN>.isolateLocal(
+        (int segment) => job.events!.send(_readSegment(b, context, segment)),
+      );
+    }
+    o.progressCallback = progressCallback?.nativeFunction ?? nullptr;
+    final code = b.transcribe(
+      context,
+      pcm,
+      samples.length,
+      options,
+      segmentCallback?.nativeFunction ?? nullptr,
+    );
     if (code != 0) {
       throw WhisperException(b.lastError(context).toDartString(), code: code);
     }
 
-    final segments = List.generate(b.segmentCount(context), (s) {
-      final tokens = List.generate(
-        b.tokenCount(context, s),
-        (t) => WhisperToken(
-          id: b.tokenId(context, s, t),
-          text: b.tokenText(context, s, t).toDartString(),
-          probability: b.tokenProbability(context, s, t),
-          start: _cs(b.tokenStart(context, s, t)),
-          end: _cs(b.tokenEnd(context, s, t)),
-        ),
-        growable: false,
-      );
-      return WhisperSegment(
-        text: b.segmentText(context, s).toDartString(),
-        start: _cs(b.segmentStart(context, s)),
-        end: _cs(b.segmentEnd(context, s)),
-        speakerTurnNext: b.speakerTurn(context, s) != 0,
-        noSpeechProbability: b.noSpeech(context, s),
-        tokens: tokens,
-      );
-    }, growable: false);
+    final segments = List.generate(
+      b.segmentCount(context),
+      (index) => _readSegment(b, context, index),
+      growable: false,
+    );
     final vad = List.generate(
       b.vadCount(context),
       (i) => WhisperVadSegment(
@@ -379,6 +419,8 @@ WhisperResult _transcribe(
       ),
     );
   } finally {
+    progressCallback?.close();
+    segmentCallback?.close();
     calloc.free(pcm);
     calloc.free(options);
     malloc.free(language);
@@ -386,6 +428,29 @@ WhisperResult _transcribe(
     if (regex != null) malloc.free(regex);
     if (vadPath != null) malloc.free(vadPath);
   }
+}
+
+WhisperSegment _readSegment(_Bindings b, Pointer<Void> context, int segment) {
+  return WhisperSegment(
+    text: b.segmentText(context, segment).toDartString(),
+    start: _cs(b.segmentStart(context, segment)),
+    end: _cs(b.segmentEnd(context, segment)),
+    speakerTurnNext: b.speakerTurn(context, segment) != 0,
+    noSpeechProbability: b.noSpeech(context, segment),
+    tokens: List.generate(b.tokenCount(context, segment), (token) {
+      final text = b.tokenText(context, segment, token);
+      return WhisperToken(
+        id: b.tokenId(context, segment, token),
+        text: utf8.decode(
+          text.cast<Uint8>().asTypedList(text.length),
+          allowMalformed: true,
+        ),
+        probability: b.tokenProbability(context, segment, token),
+        start: _cs(b.tokenStart(context, segment, token)),
+        end: _cs(b.tokenEnd(context, segment, token)),
+      );
+    }, growable: false),
+  );
 }
 
 Duration _cs(int value) => Duration(milliseconds: value * 10);
@@ -413,8 +478,11 @@ final class _Bindings {
           ),
       create = library.lookupFunction<_CreateN, _CreateD>('fw_create'),
       destroy = library.lookupFunction<_VoidN, _VoidD>('fw_destroy'),
+      prepareTranscription = library.lookupFunction<_VoidN, _VoidD>(
+        'fw_prepare_transcription',
+      ),
       transcribe = library.lookupFunction<_TranscribeN, _TranscribeD>(
-        'fw_transcribe_v2',
+        'fw_transcribe_v3',
       ),
       cancel = library.lookupFunction<_VoidN, _VoidD>('fw_cancel'),
       segmentCount = library.lookupFunction<_Int1N, _Int1D>('fw_segment_count'),
@@ -470,6 +538,7 @@ final class _Bindings {
   final _IndexedUint64D deviceMemoryTotal;
   final _CreateD create;
   final _VoidD destroy;
+  final _VoidD prepareTranscription;
   final _TranscribeD transcribe;
   final _VoidD cancel;
   final _Int1D segmentCount;

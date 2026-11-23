@@ -1,6 +1,6 @@
 // Android NDK entry point for the flutter_whisper FFI library.
 group = "com.klsruan.flutter_whisper"
-version = "1.0"
+version = "0.1.0"
 
 buildscript {
     repositories {

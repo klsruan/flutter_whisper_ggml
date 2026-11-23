@@ -57,7 +57,7 @@ appear in device enumeration when they were compiled into the native library.
 
 ```yaml
 dependencies:
-  flutter_whisper_ggml: ^0.0.3
+  flutter_whisper_ggml: ^0.1.0
 ```
 
 ```dart
@@ -112,9 +112,10 @@ try {
 }
 ```
 
-The first native call downloads and verifies the model. Later calls reuse the
-cache and inference is fully offline. On Web, reuse depends on normal browser
-HTTP caching.
+The first `loadModel` call downloads and verifies the model. Later calls can
+reuse it from disk on native platforms or from browser Cache Storage on Web.
+Once the app and model are available locally, inference runs without a network
+connection.
 
 ### Load an existing model
 
@@ -202,12 +203,33 @@ folder inside the application-support directory. Downloads:
 - retain a `.sha256` cache marker after successful verification;
 - preserve an existing model if a replacement download fails.
 
-Set `modelDirectory`/`directoryPath` when the application needs to own the cache
-location. Set `forceDownload: true` to replace a cached copy. Cache deletion is
-currently application-managed.
+Set `modelDirectory`/`directoryPath` when the native application needs to own
+the cache location or delete cached files.
 
-On Web, `prepare` returns the official HTTPS URL. The Web Worker downloads the
-model during `loadModel`, and `onModelProgress` reports that operation.
+On Web, `loadModel` stores models in Cache Storage for the current browser
+origin. The plugin checks size and SHA-256 before storing a model and on each
+reuse. A corrupted entry is bypassed and replaced by the next verified
+download. `forceDownload: true` refreshes from the network and preserves the
+existing verified copy if the refresh fails.
+
+`onDownloadProgress` reports model transfer or cache reuse.
+`onModelProgress` reports loading the prepared model into the Worker. On Web,
+providing only `onModelProgress` reports both stages on one scale. The
+browser can evict cached data. When storage is blocked or full, the current
+session can still use the verified download.
+
+To clear all managed models for the current browser origin:
+
+```dart
+await WhisperModelManager.clearWebCache(); // Web only
+```
+
+Clearing the cache leaves already loaded sessions usable. Direct Web callers
+of `WhisperModelManager.prepare` receive a temporary object URL and should call
+`WhisperModelManager.releasePreparedModel(url)` after loading it.
+`FlutterWhisper.loadModel` manages the URL automatically. For temporary files
+or arbitrary URLs supplied to `FlutterWhisper.load`, the browser handles HTTP
+caching.
 
 Files named `for-tests-*` in upstream whisper.cpp contain headers but no model
 weights. They cannot transcribe audio and are rejected by the native loader.
@@ -284,17 +306,29 @@ final result = await whisper.transcribeFile(
 );
 ```
 
+On native platforms, `onSegment` is called as whisper.cpp decodes segments.
+The callback receives a snapshot with its tokens and timestamps. Use the
+returned `WhisperResult` for the final transcript.
+
 Cancellation is cooperative:
 
 ```dart
 whisper.cancel();
 ```
 
-The active operation finishes after native inference reaches a cancellation
-checkpoint. Disposing a session waits for its queued work.
+On native platforms, you can call `cancel()` immediately after starting a
+request on an idle session or from a progress or segment callback. A request
+cancelled during WAV preparation stops before inference. Once inference is
+running, it stops at a whisper.cpp cancellation checkpoint. The cancelled
+future completes with `WhisperException` (code `-4`), and the session can
+transcribe another audio file. Disposing a session waits for its queued work.
 
 Silero VAD requires a separate compatible VAD model path in `WhisperVadConfig`;
 the speech-model catalog does not download VAD models automatically.
+Use `language: 'auto'` to detect the language and transcribe in a single call.
+English-only models always decode as English. You can enable, disable, or
+change the VAD model between transcriptions on the same loaded session.
+Each call builds its own speech regions and timestamp mapping.
 
 ## Device and GPU selection
 
@@ -377,6 +411,37 @@ The minimal example includes a Netlify/Cloudflare-compatible `web/_headers`
 file. Verify that the chosen host actually applies the headers and that remote
 model responses are allowed by its CORS/cross-origin policy.
 
+For local Chrome development, start Flutter with the same headers:
+
+```bash
+flutter run -d chrome \
+  --web-header=Cross-Origin-Opener-Policy=same-origin \
+  --web-header=Cross-Origin-Embedder-Policy=require-corp
+```
+
+### Web decoding and cancellation
+
+Web inference uses the CPU. Set `WhisperTranscribeConfig.threads` to request
+between one and four threads. The default value `0` keeps a single inference
+thread. Compare thread counts on your target devices before choosing a default
+for your app.
+
+The Web runtime supports `language`, `translate`, `initialPrompt`,
+`temperature`, `noContext`, `singleSegment`, and `tokenTimestamps`.
+`language: 'auto'` detects the language and then transcribes the audio.
+English-only models transcribe as English.
+With `tokenTimestamps: true`, both the segment callback and the final result
+include token text, probability, and timestamps.
+
+Call `whisper.cancel()` while transcription is active to request cancellation
+at whisper.cpp's next abort check. The active future completes with a
+`WhisperException` whose message is `Transcription cancelled.`. The loaded
+model can be reused for a subsequent call. The Dart page and Web Worker
+share a cancellation flag, so the request can reach the inference code while
+the Worker is busy. The flag and the runtime require cross-origin isolation.
+
+### Rebuilding and testing WebAssembly
+
 To rebuild the package Web artifacts, activate Emscripten and run one of:
 
 ```powershell
@@ -388,6 +453,17 @@ bash tool/build_web_wasm.sh Release
 ```
 
 CI pins Emscripten `4.0.7` for reproducibility.
+
+Run `bash tool/test_web_wasm.sh` from the repository to exercise the real
+runtime in Chrome. The test downloads and checks the hashes of a quantized
+Tiny English model and a short WAV before serving them locally. It verifies
+text, timestamps, token metadata, progress, and cancellation during inference.
+It also tests model reuse after reload with the model server blocked, corrupt
+entries, forced refresh, cache clearing, and quota fallback. The script needs
+Flutter, Node.js 18 or later, and
+Chrome. It serves a release build with the same COOP and COEP headers as
+production.
+Set `CHROME_EXECUTABLE` if Chrome is installed under a different command.
 
 ## Examples
 
@@ -450,17 +526,23 @@ each platform, builds the example, and validates the assembled package via
 the repository, then run `dart pub get` and `dart pub publish` in the
 extracted directory when releasing a new version.
 
+The Linux CPU and Windows CI jobs also test their packaged libraries against
+real audio. They exercise automatic language detection with multilingual and
+English-only models, compare token and segment timestamps after turning VAD off,
+and check silence and VAD model switching. They also cancel before inference
+starts and from a live segment, then reuse the same session. Fixtures are
+downloaded and verified by `tool/download_native_smoke_fixtures.sh`. The suite is
+`flutter test tool/native_whisper_smoke_test.dart`, with the packaged library
+directory on `LD_LIBRARY_PATH` for Linux or `PATH` for Windows.
+
 ## Known limitations
 
 - Native file decoding is WAV-only by design.
-- Web currently maps the common language, translation and thread controls; some
-  advanced native decoding controls are not yet forwarded by the Worker.
+- Web uses greedy sampling. Advanced settings such as beam search and VAD
+  remain available on native platforms.
 - Metal, Android Vulkan and WebGPU are not implemented.
 - The plugin does not provide microphone/live-stream capture.
-- Downloads do not currently expose pause, resume, cancellation or a cache
-  deletion API.
-- Web has no plugin-managed persistent model cache; browser HTTP caching may
-  still reuse a response.
+- Downloads do not currently expose pause, resume or cancellation.
 - Apple platforms are CI-compiled but await physical-device validation.
 - Accuracy, speed and memory depend primarily on model, quantization, audio and
   hardware.

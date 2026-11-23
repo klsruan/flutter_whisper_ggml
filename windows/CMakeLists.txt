@@ -87,6 +87,7 @@ add_subdirectory(
   "${FLUTTER_WHISPER_CPP_DIR}"
   "${CMAKE_CURRENT_BINARY_DIR}/whisper_cpp"
   EXCLUDE_FROM_ALL)
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/WhisperNativeVad.cmake")
 
 # whisper.cpp and GGML are vendored third-party sources. Their conversion and
 # deprecation warnings are not actionable by plugin consumers and can produce

@@ -49,6 +49,7 @@ async function initialize(message) {
   }
   const moduleBase = new URL('.', message.moduleUrl).href;
   moduleInstance = await createFlutterWhisperModule({
+    mainScriptUrlOrBlob: message.moduleUrl,
     locateFile: (file) => new URL(file, moduleBase).href,
     print: (text) => console.log(`[whisper.cpp] ${text}`),
     printErr: (text) => console.error(`[whisper.cpp] ${text}`),
@@ -90,6 +91,7 @@ function transcribe(message) {
     ? message.samples
     : new Float32Array(message.samples);
   const pointer = moduleInstance._malloc(samples.byteLength);
+  if (!pointer) throw new Error('Could not allocate WebAssembly audio memory.');
   try {
     if (!moduleInstance.HEAPF32) {
       throw new Error(
@@ -98,6 +100,7 @@ function transcribe(message) {
       );
     }
     moduleInstance.HEAPF32.set(samples, pointer >> 2);
+    moduleInstance.fwCancelView = new Int32Array(message.cancelBuffer);
     moduleInstance.fwOnProgress = (progress) => {
       reply(message.id, { event: 'progress', progress });
     };
@@ -112,6 +115,11 @@ function transcribe(message) {
       'string',
       'number',
       'number',
+      'string',
+      'number',
+      'number',
+      'number',
+      'number',
     ]);
     const config = message.config || {};
     const result = run(
@@ -120,14 +128,23 @@ function transcribe(message) {
       samples.length,
       config.language || 'auto',
       config.translate ? 1 : 0,
-      config.threads || 0,
+      Math.max(1, Math.min(4, config.threads || 1)),
+      config.initialPrompt ?? null,
+      config.temperature ?? 0,
+      config.tokenTimestamps ? 1 : 0,
+      config.noContext ? 1 : 0,
+      config.singleSegment ? 1 : 0,
     );
+    if (Atomics.load(moduleInstance.fwCancelView, 0)) {
+      throw new Error('Transcription cancelled.');
+    }
     if (!result) throw new Error('whisper.cpp returned an empty WASM result.');
     const parsed = JSON.parse(result);
     if (parsed.error) throw new Error(parsed.error);
     reply(message.id, { event: 'progress', progress: 100 });
     return result;
   } finally {
+    moduleInstance.fwCancelView = null;
     moduleInstance.fwOnProgress = null;
     moduleInstance.fwOnSegment = null;
     moduleInstance._free(pointer);
@@ -144,12 +161,6 @@ self.onmessage = async ({ data: message }) => {
         break;
       case 'transcribe':
         reply(id, { ok: true, result: transcribe(message) });
-        break;
-      case 'cancel':
-        if (moduleInstance && context) {
-          moduleInstance.ccall('fw_web_cancel', null, ['number'], [context]);
-        }
-        reply(id, { ok: true });
         break;
       default:
         throw new Error(`Unknown worker command: ${message.command}`);

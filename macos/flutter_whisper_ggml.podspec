@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'flutter_whisper_ggml'
-  s.version          = '0.0.3'
+  s.version          = '0.1.0'
   s.summary          = 'Offline speech recognition powered by whisper.cpp.'
   s.description      = <<-DESC
 Flutter FFI bindings for the bundled whisper.cpp runtime.

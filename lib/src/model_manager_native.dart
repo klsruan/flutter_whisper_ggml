@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'exceptions.dart';
 import 'model_catalog.dart';
+import 'model_manager_validation.dart';
 import 'model_manager.dart'
     show WhisperModelDownloadCallback, WhisperModelDownloadProgress;
 
@@ -18,7 +19,7 @@ Future<String> prepareModel(
   bool forceDownload = false,
   WhisperModelDownloadCallback? onProgress,
 }) async {
-  _validateModel(model);
+  validateModelMetadata(model);
   final directory = directoryPath == null
       ? Directory(
           '${(await getApplicationSupportDirectory()).path}'
@@ -68,7 +69,7 @@ Future<String> _download(
     final request = await client.getUrl(model.downloadUri);
     request.headers.set(
       HttpHeaders.userAgentHeader,
-      'flutter_whisper_ggml/0.0.1',
+      'flutter_whisper_ggml/0.1.0',
     );
     final response = await request.close();
     if (response.statusCode != HttpStatus.ok) {
@@ -185,13 +186,4 @@ Future<bool> _isValidCachedModel(File file, WhisperModel model) async {
   }
   await marker.writeAsString(model.sha256, flush: true);
   return true;
-}
-
-void _validateModel(WhisperModel model) {
-  if (!RegExp(r'^[a-zA-Z0-9._-]+$').hasMatch(model.id) ||
-      model.sizeBytes <= 0 ||
-      !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(model.sha256) ||
-      !const {'http', 'https'}.contains(model.downloadUri.scheme)) {
-    throw ArgumentError.value(model, 'model', 'Invalid model metadata.');
-  }
 }

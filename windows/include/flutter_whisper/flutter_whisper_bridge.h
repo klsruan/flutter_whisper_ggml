@@ -17,6 +17,7 @@ extern "C" {
 
 typedef struct fw_context fw_context;
 typedef void (*fw_progress_callback)(int32_t progress);
+typedef void (*fw_segment_callback)(int32_t segment);
 
 typedef struct fw_options_v2 {
   uint32_t abi_version;
@@ -74,6 +75,12 @@ FW_EXPORT int32_t fw_transcribe(fw_context* context, const float* samples,
 FW_EXPORT int32_t fw_transcribe_v2(fw_context* context, const float* samples,
                                    int32_t sample_count,
                                    const fw_options_v2* options);
+// Call prepare before starting a v3 request so cancellation can arrive early.
+FW_EXPORT void fw_prepare_transcription(fw_context* context);
+FW_EXPORT int32_t fw_transcribe_v3(fw_context* context, const float* samples,
+                                   int32_t sample_count,
+                                   const fw_options_v2* options,
+                                   fw_segment_callback on_segment);
 FW_EXPORT void fw_cancel(fw_context* context);
 
 FW_EXPORT int32_t fw_segment_count(const fw_context* context);

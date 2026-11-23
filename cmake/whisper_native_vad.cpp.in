@@ -1,0 +1,12 @@
+#include "@FLUTTER_WHISPER_CPP_DIR@/src/whisper.cpp"
+
+void fw_reset_vad(whisper_context* context, bool discard_model) {
+  auto* state = context->state;
+  state->vad_segments.clear();
+  state->vad_mapping_table.clear();
+  state->has_vad_segments = false;
+  if (discard_model && state->vad_context != nullptr) {
+    whisper_vad_free(state->vad_context);
+    state->vad_context = nullptr;
+  }
+}

@@ -6,6 +6,25 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses
 
 ## [Unreleased]
 
+## 0.1.0
+
+- Web model downloads now use persistent browser Cache Storage with size and
+  SHA-256 verification, forced refresh, cache clearing, and storage quota fallback.
+- Fixed native automatic language detection returning an empty transcription.
+  English-only native models now report English consistently.
+- Reset native VAD regions and timestamp mappings for each transcription.
+  Switching a VAD model path reloads that model without reloading Whisper.
+- Native segment callbacks now deliver decoded segments during inference.
+- Native cancellation also works immediately after starting a request, including
+  while the WAV file is being prepared. A cancelled session can be reused.
+- Added real-audio regression tests for the packaged Linux CPU and Windows runtimes.
+- Web cancellation interrupts active inference through a shared flag and keeps
+  the loaded model available for another transcription.
+- Web decoding honors the requested thread count, prompt, temperature, context,
+  single-segment mode, and token timestamps. Automatic language detection now
+  continues into transcription.
+- Added a real WAV and model smoke test in Chrome to Web CI.
+
 ## 0.0.3
 
 - Updated whisper.cpp to v1.9.5.

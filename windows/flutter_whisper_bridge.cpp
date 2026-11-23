@@ -11,6 +11,9 @@
 #include <thread>
 #include <vector>
 
+// Defined next to whisper.cpp so the adapter can reset its private VAD state.
+void fw_reset_vad(whisper_context* context, bool discard_model);
+
 struct fw_segment {
   std::string text;
   int64_t start;
@@ -38,6 +41,7 @@ struct fw_context {
   std::mutex mutex;
   std::vector<fw_segment> segments;
   std::vector<fw_vad_segment> vad_segments;
+  std::string vad_model_path;
   std::string language;
   std::string error;
 };
@@ -66,6 +70,48 @@ const fw_segment* SegmentAt(const fw_context* context, int32_t index) {
   }
   return &context->segments[static_cast<size_t>(index)];
 }
+
+fw_segment CaptureSegment(whisper_context* whisper, int index) {
+  fw_segment segment{
+      whisper_full_get_segment_text(whisper, index),
+      whisper_full_get_segment_t0(whisper, index),
+      whisper_full_get_segment_t1(whisper, index),
+      whisper_full_get_segment_speaker_turn_next(whisper, index),
+      whisper_full_get_segment_no_speech_prob(whisper, index),
+      {}};
+  const int count = whisper_full_n_tokens(whisper, index);
+  segment.tokens.reserve(static_cast<size_t>(count));
+  for (int token = 0; token < count; ++token) {
+    segment.tokens.push_back({
+        whisper_full_get_token_id(whisper, index, token),
+        whisper_full_get_token_text(whisper, index, token),
+        whisper_full_get_token_p(whisper, index, token),
+        whisper_full_get_token_t0(whisper, index, token),
+        whisper_full_get_token_t1(whisper, index, token),
+    });
+  }
+  return segment;
+}
+
+struct SegmentListener {
+  fw_context* context;
+  fw_segment_callback callback;
+};
+
+void NewSegmentCallback(whisper_context* whisper, whisper_state*, int n_new,
+                        void* user_data) {
+  auto* listener = static_cast<SegmentListener*>(user_data);
+  auto& segments = listener->context->segments;
+  const int count = whisper_full_n_segments(whisper);
+  for (int i = std::max(0, count - n_new); i < count; ++i) {
+    segments.push_back(CaptureSegment(whisper, i));
+    listener->callback(static_cast<int32_t>(segments.size() - 1));
+  }
+}
+
+int32_t Transcribe(fw_context* context, const float* samples, int32_t sample_count,
+                   const fw_options_v2* options, bool prepared,
+                   fw_segment_callback on_segment);
 
 }  // namespace
 
@@ -161,6 +207,24 @@ int32_t fw_transcribe(fw_context* context, const float* samples,
 
 int32_t fw_transcribe_v2(fw_context* context, const float* samples,
                          int32_t sample_count, const fw_options_v2* options) {
+  return Transcribe(context, samples, sample_count, options, false, nullptr);
+}
+
+void fw_prepare_transcription(fw_context* context) {
+  if (context != nullptr) context->abort_requested.store(false);
+}
+
+int32_t fw_transcribe_v3(fw_context* context, const float* samples,
+                         int32_t sample_count, const fw_options_v2* options,
+                         fw_segment_callback on_segment) {
+  return Transcribe(context, samples, sample_count, options, true, on_segment);
+}
+
+namespace {
+
+int32_t Transcribe(fw_context* context, const float* samples,
+                   int32_t sample_count, const fw_options_v2* options,
+                   bool prepared, fw_segment_callback on_segment) {
   if (context == nullptr || context->whisper == nullptr) return -1;
   if (options == nullptr || options->abi_version != 2 ||
       options->struct_size < sizeof(fw_options_v2)) {
@@ -174,11 +238,15 @@ int32_t fw_transcribe_v2(fw_context* context, const float* samples,
 
   std::lock_guard<std::mutex> lock(context->mutex);
   try {
-    context->abort_requested.store(false);
+    if (!prepared) context->abort_requested.store(false);
     context->segments.clear();
     context->vad_segments.clear();
     context->language.clear();
     context->error.clear();
+    if (context->abort_requested.load()) {
+      context->error = "Transcription cancelled.";
+      return -4;
+    }
 
     const auto strategy = options->strategy == 1 ? WHISPER_SAMPLING_BEAM_SEARCH
                                                   : WHISPER_SAMPLING_GREEDY;
@@ -207,6 +275,13 @@ int32_t fw_transcribe_v2(fw_context* context, const float* samples,
     params.beam_search.patience = options->beam_patience;
     params.vad = options->vad_enabled != 0;
     params.vad_model_path = options->vad_model_path;
+    if (params.vad && (params.vad_model_path == nullptr || params.vad_model_path[0] == '\0')) {
+      context->error = "VAD requires a model path.";
+      return -2;
+    }
+    const bool new_vad_model = params.vad && context->vad_model_path != params.vad_model_path;
+    fw_reset_vad(context->whisper, new_vad_model);
+    if (new_vad_model) context->vad_model_path = params.vad_model_path;
     params.vad_params.threshold = options->vad_threshold;
     params.vad_params.min_speech_duration_ms = options->vad_min_speech_ms;
     params.vad_params.min_silence_duration_ms = options->vad_min_silence_ms;
@@ -224,43 +299,36 @@ int32_t fw_transcribe_v2(fw_context* context, const float* samples,
       params.progress_callback_user_data =
           reinterpret_cast<void*>(options->progress_callback);
     }
+    SegmentListener listener{context, on_segment};
+    if (on_segment != nullptr) {
+      params.new_segment_callback = NewSegmentCallback;
+      params.new_segment_callback_user_data = &listener;
+    }
 
     const std::string requested_language = options->language == nullptr ? "auto" : options->language;
-    params.language = requested_language.c_str();
-    params.detect_language = requested_language.empty() || requested_language == "auto";
+    const bool multilingual = whisper_is_multilingual(context->whisper) != 0;
+    params.language = multilingual ? requested_language.c_str() : "en";
+    // An empty or "auto" language detects the language and continues decoding.
+    // detect_language would stop immediately after detection.
+    params.detect_language = false;
 
     const int result = whisper_full(context->whisper, params, samples, sample_count);
+    if (context->abort_requested.load()) {
+      context->error = "Transcription cancelled.";
+      return -4;
+    }
     if (result != 0) {
-      context->error = context->abort_requested.load()
-                           ? "Transcription cancelled."
-                           : "whisper_full failed.";
-      return context->abort_requested.load() ? -4 : -3;
+      context->error = "whisper_full failed.";
+      return -3;
     }
 
     const int count = whisper_full_n_segments(context->whisper);
+    context->segments.clear();
     context->segments.reserve(static_cast<size_t>(count));
     for (int i = 0; i < count; ++i) {
-      fw_segment segment{
-          whisper_full_get_segment_text(context->whisper, i),
-          whisper_full_get_segment_t0(context->whisper, i),
-          whisper_full_get_segment_t1(context->whisper, i),
-          whisper_full_get_segment_speaker_turn_next(context->whisper, i),
-          whisper_full_get_segment_no_speech_prob(context->whisper, i),
-          {}};
-      const int token_count = whisper_full_n_tokens(context->whisper, i);
-      segment.tokens.reserve(static_cast<size_t>(token_count));
-      for (int token = 0; token < token_count; ++token) {
-        segment.tokens.push_back({
-            whisper_full_get_token_id(context->whisper, i, token),
-            whisper_full_get_token_text(context->whisper, i, token),
-            whisper_full_get_token_p(context->whisper, i, token),
-            whisper_full_get_token_t0(context->whisper, i, token),
-            whisper_full_get_token_t1(context->whisper, i, token),
-        });
-      }
-      context->segments.push_back(std::move(segment));
+      context->segments.push_back(CaptureSegment(context->whisper, i));
     }
-    const int vad_count = whisper_full_n_vad_segments(context->whisper);
+    const int vad_count = params.vad ? whisper_full_n_vad_segments(context->whisper) : 0;
     context->vad_segments.reserve(static_cast<size_t>(vad_count));
     for (int i = 0; i < vad_count; ++i) {
       context->vad_segments.push_back({
@@ -269,7 +337,7 @@ int32_t fw_transcribe_v2(fw_context* context, const float* samples,
       });
     }
     const int language_id = whisper_full_lang_id(context->whisper);
-    const char* detected = whisper_lang_str(language_id);
+    const char* detected = multilingual ? whisper_lang_str(language_id) : "en";
     context->language = detected == nullptr ? "" : detected;
     return 0;
   } catch (const std::exception& exception) {
@@ -280,6 +348,8 @@ int32_t fw_transcribe_v2(fw_context* context, const float* samples,
     return -5;
   }
 }
+
+}  // namespace
 
 void fw_cancel(fw_context* context) {
   if (context != nullptr) context->abort_requested.store(true);

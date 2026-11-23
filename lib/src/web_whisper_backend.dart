@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 
 import 'package:web/web.dart' as web;
@@ -9,14 +10,26 @@ import 'exceptions.dart';
 import 'models.dart';
 import 'whisper_backend.dart';
 
+@JS('SharedArrayBuffer')
+extension type _CancelBuffer._(JSObject _) implements JSObject {
+  external _CancelBuffer(int byteLength);
+}
+
+@JS('Int32Array')
+extension type _CancelView._(JSObject _) implements JSObject {
+  external _CancelView(_CancelBuffer buffer);
+}
+
+@JS('Atomics.store')
+external int _storeCancel(_CancelView view, int index, int value);
+
 final class WebWhisperBackend implements WhisperBackend {
   WebWhisperBackend._(this._worker) {
     _worker.addEventListener('message', _onMessage.toJS);
     _worker.addEventListener('error', _onError.toJS);
   }
 
-  static const _assetBase =
-      'assets/packages/flutter_whisper_ggml/assets/web';
+  static const _assetBase = 'assets/packages/flutter_whisper_ggml/assets/web';
   static const workerUrl = '$_assetBase/flutter_whisper_worker.js';
   static const moduleUrl = '$_assetBase/flutter_whisper.js';
 
@@ -29,6 +42,11 @@ final class WebWhisperBackend implements WhisperBackend {
       throw const WhisperException(
         'Web browsers cannot read C:\\ model paths. Select the model with '
         'the browser file button or provide an HTTP(S)/asset URL.',
+      );
+    }
+    if (!web.window.crossOriginIsolated) {
+      throw const WhisperException(
+        'Whisper Web requires cross-origin isolation. Configure COOP and COEP.',
       );
     }
     final backend = WebWhisperBackend._(web.Worker(workerUrl.toJS));
@@ -51,6 +69,7 @@ final class WebWhisperBackend implements WhisperBackend {
   final Map<int, Completer<Map<String, Object?>>> _pending = {};
   final Map<int, void Function(int)> _progress = {};
   final Map<int, void Function(WhisperSegment)> _segments = {};
+  _CancelView? _activeCancel;
   var _nextRequest = 0;
   var _disposed = false;
 
@@ -65,29 +84,39 @@ final class WebWhisperBackend implements WhisperBackend {
     if (samples.isEmpty) {
       throw const WhisperException('Audio samples cannot be empty.');
     }
-    final response = await _request(
-      'transcribe',
-      {
-        'samples': samples,
-        'config': {
-          'language': config.language,
-          'translate': config.translate,
-          'threads': config.threads,
-          'tokenTimestamps': config.tokenTimestamps,
-          'noContext': config.noContext,
-          'singleSegment': config.singleSegment,
-          'initialPrompt': config.initialPrompt,
-          'temperature': config.temperature,
+    if (_activeCancel != null) {
+      throw StateError('A Web transcription is already in progress.');
+    }
+    final cancelBuffer = _CancelBuffer(4);
+    _activeCancel = _CancelView(cancelBuffer);
+    try {
+      final response = await _request(
+        'transcribe',
+        {
+          'samples': samples,
+          'config': {
+            'language': config.language,
+            'translate': config.translate,
+            'threads': config.threads,
+            'tokenTimestamps': config.tokenTimestamps,
+            'noContext': config.noContext,
+            'singleSegment': config.singleSegment,
+            'initialPrompt': config.initialPrompt,
+            'temperature': config.temperature,
+          },
         },
-      },
-      onProgress: onProgress,
-      onSegment: onSegment,
-    );
-    final encoded = response['result'];
-    final map = encoded is String
-        ? jsonDecode(encoded) as Map<String, Object?>
-        : (encoded as Map).cast<String, Object?>();
-    return _resultFromJson(map);
+        onProgress: onProgress,
+        onSegment: onSegment,
+        cancelBuffer: cancelBuffer,
+      );
+      final encoded = response['result'];
+      final map = encoded is String
+          ? jsonDecode(encoded) as Map<String, Object?>
+          : (encoded as Map).cast<String, Object?>();
+      return _resultFromJson(map);
+    } finally {
+      _activeCancel = null;
+    }
   }
 
   Future<Map<String, Object?>> _request(
@@ -95,13 +124,24 @@ final class WebWhisperBackend implements WhisperBackend {
     Map<String, Object?> payload, {
     void Function(int)? onProgress,
     void Function(WhisperSegment)? onSegment,
+    _CancelBuffer? cancelBuffer,
   }) {
     final id = _nextRequest++;
     final completer = Completer<Map<String, Object?>>();
     _pending[id] = completer;
     if (onProgress != null) _progress[id] = onProgress;
     if (onSegment != null) _segments[id] = onSegment;
-    _worker.postMessage({'id': id, 'command': command, ...payload}.jsify());
+    final message =
+        {'id': id, 'command': command, ...payload}.jsify()! as JSObject;
+    if (cancelBuffer != null) message['cancelBuffer'] = cancelBuffer;
+    try {
+      _worker.postMessage(message);
+    } catch (error, stackTrace) {
+      _pending.remove(id);
+      _progress.remove(id);
+      _segments.remove(id);
+      completer.completeError(error, stackTrace);
+    }
     return completer.future;
   }
 
@@ -152,9 +192,8 @@ final class WebWhisperBackend implements WhisperBackend {
 
   @override
   void cancel() {
-    if (!_disposed) {
-      _worker.postMessage({'id': -1, 'command': 'cancel'}.jsify());
-    }
+    final active = _activeCancel;
+    if (!_disposed && active != null) _storeCancel(active, 0, 1);
   }
 
   @override
@@ -190,6 +229,18 @@ WhisperSegment _segmentFromJson(Map<String, Object?> data) => WhisperSegment(
   text: data['text']?.toString() ?? '',
   start: _centiseconds(data['start']),
   end: _centiseconds(data['end']),
+  tokens: (data['tokens'] as List? ?? const [])
+      .map((raw) {
+        final token = raw as Map;
+        return WhisperToken(
+          id: (token['id'] as num).toInt(),
+          text: token['text'] as String,
+          probability: (token['probability'] as num).toDouble(),
+          start: _centiseconds(token['start']),
+          end: _centiseconds(token['end']),
+        );
+      })
+      .toList(growable: false),
 );
 
 Duration _centiseconds(Object? value) =>

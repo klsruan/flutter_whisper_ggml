@@ -3,8 +3,11 @@ library;
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 import 'src/models.dart';
 import 'src/audio_decoder.dart';
+import 'src/exceptions.dart';
 import 'src/model_catalog.dart';
 import 'src/model_manager.dart';
 import 'src/platform_runtime.dart' as runtime;
@@ -34,7 +37,8 @@ class FlutterWhisper {
   final WhisperBackend _native;
   final WhisperAudioDecoder _audioDecoder;
   bool _disposed = false;
-  Future<void> _queue = Future<void>.value();
+  bool _cancelRequested = false;
+  Future<void>? _queue;
 
   /// Loads a GGML Whisper model from [modelPath].
   static Future<FlutterWhisper> load({
@@ -51,9 +55,9 @@ class FlutterWhisper {
   /// Downloads (or reuses) [model] and loads it into whisper.cpp.
   ///
   /// Native platforms cache models in the application support directory. Set
-  /// [modelDirectory] to control that location. Web loads the official URL in
-  /// the WebAssembly worker and reports network/loading progress through
-  /// [onModelProgress].
+  /// [modelDirectory] to control that location. Web stores models in the
+  /// browser cache after verification. [onDownloadProgress] reports download
+  /// or cache reuse, and [onModelProgress] reports loading the prepared model.
   static Future<FlutterWhisper> loadModel({
     required WhisperModel model,
     String? modelDirectory,
@@ -62,17 +66,28 @@ class FlutterWhisper {
     WhisperModelDownloadCallback? onDownloadProgress,
     void Function(int progress)? onModelProgress,
   }) async {
+    final combinedWebProgress = kIsWeb && onDownloadProgress == null
+        ? onModelProgress
+        : null;
     final modelPath = await WhisperModelManager.prepare(
       model,
       directoryPath: modelDirectory,
       forceDownload: forceDownload,
-      onProgress: onDownloadProgress,
+      onProgress: combinedWebProgress == null
+          ? onDownloadProgress
+          : (progress) => combinedWebProgress(progress.percent ~/ 2),
     );
-    return load(
-      modelPath: modelPath,
-      config: config,
-      onModelProgress: onModelProgress,
-    );
+    try {
+      return await load(
+        modelPath: modelPath,
+        config: config,
+        onModelProgress: combinedWebProgress == null
+            ? onModelProgress
+            : (progress) => combinedWebProgress(50 + progress ~/ 2),
+      );
+    } finally {
+      WhisperModelManager.releasePreparedModel(modelPath);
+    }
   }
 
   /// Lists the devices compiled into and detected by the native GGML runtime.
@@ -87,16 +102,19 @@ class FlutterWhisper {
     WhisperTranscribeConfig config = const WhisperTranscribeConfig(),
     void Function(int progress)? onProgress,
     void Function(WhisperSegment segment)? onSegment,
-  }) async {
-    _ensureActive();
+  }) => _enqueue(() async {
     final samples = await _audioDecoder.decode(inputPath);
-    return transcribe(
+    if (_cancelRequested) {
+      throw const WhisperException('Transcription cancelled.', code: -4);
+    }
+    _ensureActive();
+    return _native.transcribe(
       samples,
-      config: config,
+      config,
       onProgress: onProgress,
       onSegment: onSegment,
     );
-  }
+  });
 
   /// Transcribes mono 16 kHz PCM samples normalized to `[-1.0, 1.0]`.
   Future<WhisperResult> transcribe(
@@ -104,24 +122,47 @@ class FlutterWhisper {
     WhisperTranscribeConfig config = const WhisperTranscribeConfig(),
     void Function(int progress)? onProgress,
     void Function(WhisperSegment segment)? onSegment,
-  }) {
+  }) => _enqueue(
+    () => _native.transcribe(
+      samples,
+      config,
+      onProgress: onProgress,
+      onSegment: onSegment,
+    ),
+  );
+
+  Future<WhisperResult> _enqueue(Future<WhisperResult> Function() operation) {
     _ensureActive();
-    final result = _queue.then((_) async {
-      _ensureActive();
-      return _native.transcribe(
-        samples,
-        config,
-        onProgress: onProgress,
-        onSegment: onSegment,
+    final previous = _queue;
+    final result = Completer<WhisperResult>();
+    final done = result.future.then<void>((_) {}, onError: (_) {});
+    _queue = done;
+
+    void run() {
+      result.complete(
+        Future<WhisperResult>.sync(() {
+          _ensureActive();
+          _cancelRequested = false;
+          return operation();
+        }).whenComplete(() {
+          if (identical(_queue, done)) _queue = null;
+        }),
       );
-    });
-    _queue = result.then<void>((_) {}, onError: (_) {});
-    return result;
+    }
+
+    // An idle session starts immediately so cancel() can reach that request.
+    if (previous == null) {
+      run();
+    } else {
+      unawaited(previous.then((_) => run()));
+    }
+    return result.future;
   }
 
   /// Requests cancellation of the active transcription.
   void cancel() {
     _ensureActive();
+    _cancelRequested = true;
     unawaited(_audioDecoder.cancel());
     _native.cancel();
   }

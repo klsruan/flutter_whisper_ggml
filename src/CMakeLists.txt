@@ -54,6 +54,7 @@ add_subdirectory(
   "${FLUTTER_WHISPER_CPP_DIR}"
   "${CMAKE_CURRENT_BINARY_DIR}/whisper_cpp"
   EXCLUDE_FROM_ALL)
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/WhisperNativeVad.cmake")
 
 if(APPLE)
   set(_fw_library_type STATIC)
