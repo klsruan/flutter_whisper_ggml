@@ -3,7 +3,7 @@
 [![CI](https://github.com/klsruan/flutter_whisper_ggml/actions/workflows/ci.yml/badge.svg)](https://github.com/klsruan/flutter_whisper_ggml/actions/workflows/ci.yml)
 
 Cross-platform, offline speech recognition for Flutter powered by a bundled and
-pinned [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp) v1.9.2 runtime.
+pinned [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp) v1.9.5 runtime.
 
 The plugin runs inference locally, accepts WAV audio, reports progress and live
 segments, and exports timestamped results as text, JSON or SRT. Native platforms
@@ -19,7 +19,7 @@ Highlights:
   VAD controls, cancellation and live segments;
 - no FFmpeg or model binaries bundled into the package.
 
-> `0.0.1` is a beta release. The public API may change before `1.0.0`.
+> The package is in beta. The public API may change before `1.0.0`.
 
 ## Contents
 
@@ -40,7 +40,7 @@ Highlights:
 
 | Platform | Runtime | Acceleration | Current validation |
 | --- | --- | --- | --- |
-| Windows x64 | Dart FFI | CPU, CUDA or Vulkan | CI build and manual use |
+| Windows x64 | Dart FFI | CPU in pub.dev builds | CI build and manual use |
 | Linux x64 | Dart FFI | CPU or Vulkan | CPU/Vulkan CI builds |
 | Android 24+ | Dart FFI/NDK | CPU/NEON, ARM64 and x86_64 | Release CI build |
 | iOS 13+ | Dart FFI/CocoaPods | CPU + Accelerate | Simulator and unsigned ARM64 CI builds |
@@ -57,7 +57,7 @@ appear in device enumeration when they were compiled into the native library.
 
 ```yaml
 dependencies:
-  flutter_whisper_ggml: ^0.0.1
+  flutter_whisper_ggml: ^0.0.3
 ```
 
 ```dart
@@ -215,7 +215,7 @@ weights. They cannot transcribe audio and are rejected by the native loader.
 ### All model downloads
 
 Links and exact catalog metadata come from the model repositories used by the
-whisper.cpp v1.9.2 download scripts.
+whisper.cpp v1.9.5 download scripts.
 
 | Model | Size | Variant |
 | --- | ---: | --- |
@@ -318,33 +318,23 @@ enumeration currently exposes only the WebAssembly CPU runtime.
 
 ### Windows backend
 
-CPU is the default backend so normal consumer builds do not unexpectedly probe
-or compile a GPU SDK. CUDA and Vulkan are explicit build-time choices. Build
-directories created by older versions with an `AUTO` cache value are migrated
-to CPU.
-
-```powershell
-$env:FLUTTER_WHISPER_GPU_BACKEND='CPU'     # CPU, CUDA or VULKAN
-flutter build windows --release
-```
-
-CUDA requires the CUDA Toolkit. Vulkan requires a Vulkan SDK and shader compiler
-during the native build. Backend selection changes what is compiled; it cannot
-enable a GPU in an already-built binary.
-
-The plugin uses its pinned `whisper/v1.9.2` source tree by default. Maintainers
-may set `FLUTTER_WHISPER_CPP_DIR` to test another checkout, but application
-consumers do not need that environment variable.
+The pub.dev package includes the x64 CPU runtime. Maintainers building from
+the repository can select CPU, CUDA, or Vulkan with
+`FLUTTER_WHISPER_GPU_BACKEND`. CUDA requires the CUDA Toolkit. Vulkan requires
+its SDK and shader compiler for source builds.
 
 ### Linux backend
 
+The pub.dev package includes x64 CPU and Vulkan runtimes. CPU is selected by
+default. To bundle the Vulkan runtime in your application:
+
 ```bash
-FLUTTER_WHISPER_GPU_BACKEND=CPU flutter build linux --release
 FLUTTER_WHISPER_GPU_BACKEND=VULKAN flutter build linux --release
 ```
 
-The Vulkan build requires Vulkan development headers, SPIR-V headers/tools and
-`glslc`.
+The Vulkan runtime requires the Vulkan loader and a compatible driver. Building
+it from source also requires the Vulkan development headers, SPIR-V tools and
+headers, and `glslc`.
 
 ## Output
 
@@ -440,38 +430,25 @@ package.
 
 ## Build and validation
 
-Normal consumers build against the bundled source in `whisper/v1.9.2`.
-Maintainers can explicitly test another checkout:
+The pub.dev package includes precompiled whisper.cpp runtimes for Android
+(ARM64 and x64, with 16 KiB page support), Linux x64, Windows x64, iOS
+(ARM64 devices and ARM64/x64 simulators), macOS (ARM64 and x64), and Web.
+Flutter bundles these binaries as part of the application build.
 
-```powershell
-$env:FLUTTER_WHISPER_CPP_DIR='C:\src\whisper.cpp'
-flutter build windows
-```
+Local builds from the repository use Git to fetch the official whisper.cpp
+v1.9.5 tag on first configure and cache the checkout in the build directory.
+Set `FLUTTER_WHISPER_CPP_DIR` to use an existing checkout.
 
-Local quality checks:
+Run `bash tool/build_apple.sh` before building the iOS or macOS example.
+To regenerate browser assets, activate Emscripten and run
+`bash tool/build_web_wasm.sh Release` or `tool/build_web_wasm.ps1`.
 
-```bash
-flutter pub get
-flutter analyze
-flutter test
-
-cd example
-flutter analyze
-flutter test
-```
-
-`.github/workflows/ci.yml` validates analysis, tests and the pub.dev archive,
-then builds Android, Linux CPU/Vulkan, Windows CPU, Web/Emscripten, iOS Simulator,
-unsigned iOS ARM64 and macOS. Real-model integration tests remain in the full
-example because their fixtures and runtime are too large for the package suite.
-
-Native packaging notes:
-
-- Android statically links whisper.cpp/GGML into one shared library and supports
-  16 KiB pages;
-- Linux and Windows package the stable C bridge and selected GGML backends;
-- iOS and macOS compile C++17 sources through CocoaPods with Accelerate;
-- Apple privacy manifests declare no tracking or collected data.
+`.github/workflows/ci.yml` clones the pinned Whisper tag on GitHub, compiles
+each platform, builds the example, and validates the assembled package via
+`dart pub publish --dry-run`. The package job uploads the archive as
+`flutter_whisper_ggml-pub-package`. Download and extract that artifact outside
+the repository, then run `dart pub get` and `dart pub publish` in the
+extracted directory when releasing a new version.
 
 ## Known limitations
 
@@ -491,7 +468,7 @@ Native packaging notes:
 ## License
 
 `flutter_whisper_ggml` is distributed under the [MIT License](LICENSE),
-copyright (c) 2026 Ruan Dias. Bundled whisper.cpp sources retain their own
-license notices.
+copyright (c) 2026 Ruan Dias. The bundled runtime retains the
+[whisper.cpp license](LICENSE-whisper.cpp).
 Applications must also review the license and usage terms of each model they
 distribute or download.

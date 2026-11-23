@@ -10,15 +10,6 @@ $configurationDir = $Configuration.ToLowerInvariant()
 $buildDir = Join-Path $pluginRoot "build\web-wasm-emscripten\$configurationDir"
 $assetDir = Join-Path $pluginRoot 'assets\web'
 
-if ([string]::IsNullOrWhiteSpace($WhisperCppDir)) {
-  $WhisperCppDir = Join-Path $pluginRoot 'whisper\v1.9.2'
-}
-$WhisperCppDir = [System.IO.Path]::GetFullPath($WhisperCppDir)
-if (-not (Test-Path -LiteralPath (Join-Path $WhisperCppDir 'include\whisper.h'))) {
-  throw "whisper.cpp was not found at '$WhisperCppDir'."
-}
-Write-Output "Using bundled whisper.cpp source: $WhisperCppDir"
-
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
   $bundledCMake = Get-ChildItem `
     'C:\Program Files (x86)\Microsoft Visual Studio' `

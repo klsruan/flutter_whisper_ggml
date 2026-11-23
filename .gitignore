@@ -56,7 +56,6 @@ build.ninja
 *.gguf
 *.wav
 *.mp3
-!whisper/v1.9.2/samples/jfk.mp3
 *.m4a
 *.aac
 *.mp4
@@ -126,3 +125,10 @@ Desktop.ini
 
 # Keep the official package WebAssembly binary tracked.
 !assets/web/flutter_whisper.wasm
+
+# Generated publication binaries
+/android/src/main/jniLibs/
+/linux/prebuilt/
+/windows/prebuilt/
+/ios/*.xcframework/
+/macos/*.xcframework/

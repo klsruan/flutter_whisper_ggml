@@ -448,11 +448,12 @@ final class _Bindings {
       ),
       lastError = library.lookupFunction<_Text1N, _Text1D>('fw_last_error');
   factory _Bindings.open() {
+    if (Platform.isIOS || Platform.isMacOS) {
+      return _Bindings(DynamicLibrary.process());
+    }
     final libraryName = switch (Platform.operatingSystem) {
       'windows' => 'flutter_whisper_plugin.dll',
       'linux' || 'android' => 'libflutter_whisper_plugin.so',
-      'ios' || 'macos' =>
-        'flutter_whisper_ggml.framework/flutter_whisper_ggml',
       _ => throw UnsupportedError(
         'flutter_whisper native is unsupported on '
         '${Platform.operatingSystem}.',

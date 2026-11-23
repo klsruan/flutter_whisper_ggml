@@ -37,12 +37,20 @@ void main() {
     expect(headers, contains('Cross-Origin-Embedder-Policy: require-corp'));
   });
 
-  test('publication excludes upstream media without Git ignore conflicts', () {
+  test('publication excludes upstream source and stages compiled binaries', () {
     final pubignore = File('.pubignore').readAsStringSync();
     final gitignore = File('.gitignore').readAsStringSync();
 
-    expect(pubignore, contains('whisper/v1.9.2/samples/'));
-    expect(gitignore, contains('!whisper/v1.9.2/samples/jfk.mp3'));
+    final ci = File('.github/workflows/ci.yml').readAsStringSync();
+
+    expect(pubignore, contains('build/'));
+    expect(gitignore, contains('build/'));
+    expect(ci, contains('WHISPER_VERSION: v1.9.5'));
+    expect(ci, contains('git clone --depth 1 --branch'));
+    expect(ci, contains('/build/whisper.cpp'));
+    expect(ci, contains('dart pub publish --dry-run'));
+    expect(ci, contains('flutter_whisper_ggml-pub-package'));
+    expect(File('LICENSE-whisper.cpp').existsSync(), isTrue);
     expect(File('LICENSE').readAsStringSync(), contains('2026 Ruan Dias'));
   });
 }

@@ -1,34 +1,31 @@
-# Shared native build used by Android and Linux.
+# Shared native runtime build for Android, Linux, iOS and macOS.
 cmake_minimum_required(VERSION 3.14)
 
 project(flutter_whisper_plugin LANGUAGES C CXX)
 cmake_policy(VERSION 3.14...3.25)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 get_filename_component(FLUTTER_WHISPER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
-set(FLUTTER_WHISPER_CPP_DIR
-    "${FLUTTER_WHISPER_ROOT}/whisper/v1.9.2"
-    CACHE PATH "Path to the bundled whisper.cpp source")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/WhisperSource.cmake")
 
-if(NOT EXISTS "${FLUTTER_WHISPER_CPP_DIR}/include/whisper.h")
-  message(FATAL_ERROR
-    "Bundled whisper.cpp v1.9.2 was not found at ${FLUTTER_WHISPER_CPP_DIR}")
-endif()
-
-# Link whisper.cpp and GGML statically into one plugin library. Consumers only
-# need to load libflutter_whisper_plugin.so.
+# Link whisper.cpp and GGML statically into the FFI runtime.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_IS_DEV OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 
 set(FLUTTER_WHISPER_GPU_BACKEND "CPU" CACHE STRING
-    "Linux GPU backend: CPU or VULKAN")
+    "Native GPU backend: CPU or VULKAN")
 if(NOT ANDROID AND DEFINED ENV{FLUTTER_WHISPER_GPU_BACKEND})
   string(TOUPPER "$ENV{FLUTTER_WHISPER_GPU_BACKEND}" _FW_GPU_BACKEND_ENV)
   set(FLUTTER_WHISPER_GPU_BACKEND "${_FW_GPU_BACKEND_ENV}" CACHE STRING
@@ -40,7 +37,6 @@ if(ANDROID)
   # CPU/NEON is the portable Android baseline. Vulkan can be added later with
   # host shader generation and device-specific validation.
   set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
-  set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 elseif(FLUTTER_WHISPER_GPU_BACKEND STREQUAL "VULKAN")
   set(GGML_VULKAN ON CACHE BOOL "" FORCE)
 elseif(FLUTTER_WHISPER_GPU_BACKEND STREQUAL "CPU")
@@ -59,7 +55,12 @@ add_subdirectory(
   "${CMAKE_CURRENT_BINARY_DIR}/whisper_cpp"
   EXCLUDE_FROM_ALL)
 
-add_library(flutter_whisper_plugin SHARED
+if(APPLE)
+  set(_fw_library_type STATIC)
+else()
+  set(_fw_library_type SHARED)
+endif()
+add_library(flutter_whisper_plugin ${_fw_library_type}
   "${FLUTTER_WHISPER_ROOT}/windows/flutter_whisper_bridge.cpp")
 
 target_include_directories(flutter_whisper_plugin PRIVATE
@@ -79,6 +80,6 @@ if(ANDROID)
   target_link_options(flutter_whisper_plugin PRIVATE
     "-Wl,-z,max-page-size=16384"
     "-Wl,--exclude-libs,ALL")
-elseif(UNIX)
+elseif(UNIX AND NOT APPLE)
   target_link_options(flutter_whisper_plugin PRIVATE "-Wl,--exclude-libs,ALL")
 endif()

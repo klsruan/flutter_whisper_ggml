@@ -45,7 +45,7 @@ final class WhisperModel {
   String toString() => 'WhisperModel($id, $sizeLabel)';
 }
 
-/// Models offered by the official whisper.cpp v1.9.2 download scripts.
+/// Models offered by the official whisper.cpp v1.9.5 download scripts.
 abstract final class WhisperModels {
   static const defaultBaseUrl =
       'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';

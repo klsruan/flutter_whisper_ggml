@@ -28,6 +28,14 @@ Pods/
 *.log
 *.tmp
 
-# Upstream fixtures and documentation not needed by plugin compilation
-whisper/v1.9.2/samples/
-whisper/v1.9.2/media/
+# Native build inputs
+/cmake/
+/src/
+/web/
+/tool/
+/windows/*.cpp
+/windows/*.h
+/windows/test/
+/windows/include/flutter_whisper/flutter_whisper_bridge.h
+/test/native_platform_structure_test.dart
+/test/ci_cd_structure_test.dart

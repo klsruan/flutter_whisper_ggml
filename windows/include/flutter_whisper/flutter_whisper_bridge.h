@@ -5,6 +5,8 @@
 
 #ifdef _WIN32
 #define FW_EXPORT __declspec(dllexport)
+#elif defined(__APPLE__)
+#define FW_EXPORT __attribute__((visibility("default"), used))
 #else
 #define FW_EXPORT __attribute__((visibility("default")))
 #endif

@@ -1,34 +1,26 @@
 cmake_minimum_required(VERSION 3.20)
 project(flutter_whisper_web LANGUAGES C CXX)
 
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 if(NOT EMSCRIPTEN)
   message(FATAL_ERROR "Configure this target with emcmake.")
 endif()
 
-set(FLUTTER_WHISPER_CPP_DIR "" CACHE PATH "Path to whisper.cpp")
-if(NOT FLUTTER_WHISPER_CPP_DIR AND DEFINED ENV{FLUTTER_WHISPER_CPP_DIR})
-  file(TO_CMAKE_PATH "$ENV{FLUTTER_WHISPER_CPP_DIR}" FLUTTER_WHISPER_CPP_DIR)
-endif()
-if(NOT FLUTTER_WHISPER_CPP_DIR)
-  get_filename_component(
-    FLUTTER_WHISPER_CPP_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/../whisper/v1.9.2"
-    ABSOLUTE)
-endif()
-if(NOT EXISTS "${FLUTTER_WHISPER_CPP_DIR}/include/whisper.h")
-  message(FATAL_ERROR
-    "Bundled whisper.cpp v1.9.2 was not found at ${FLUTTER_WHISPER_CPP_DIR}. "
-    "Restore whisper/v1.9.2 or set FLUTTER_WHISPER_CPP_DIR explicitly.")
-endif()
-message(STATUS "flutter_whisper whisper.cpp source: ${FLUTTER_WHISPER_CPP_DIR}")
+# Emscripten can report x86 as its host-compatible processor name.
+set(CMAKE_SYSTEM_PROCESSOR wasm32)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/WhisperSource.cmake")
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_IS_DEV OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 set(GGML_WEBGPU OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 add_subdirectory("${FLUTTER_WHISPER_CPP_DIR}" whisper_cpp EXCLUDE_FROM_ALL)
 
 add_executable(flutter_whisper flutter_whisper_web_bridge.cpp)

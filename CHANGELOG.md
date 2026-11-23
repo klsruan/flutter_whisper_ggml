@@ -6,7 +6,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses
 
 ## [Unreleased]
 
-### 0.0.2
+## 0.0.3
+
+- Updated whisper.cpp to v1.9.5.
+- CI builds the bundled native and WebAssembly runtimes from the upstream
+  GitHub tag and assembles the pub.dev package with the compiled binaries.
+
+## 0.0.2
 
 - Pinned the local whisper.cpp v1.9.2 source tree as the default Windows build
   input, removing the requirement for an external checkout.

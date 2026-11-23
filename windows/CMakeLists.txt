@@ -8,13 +8,10 @@ cmake_minimum_required(VERSION 3.14)
 set(PROJECT_NAME "flutter_whisper_ggml")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
-# Other Flutter plugins may declare CXX-only projects. GGML contains C targets,
-# so explicitly restore C language detection before adding whisper.cpp.
-enable_language(C)
-
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
 cmake_policy(VERSION 3.14...3.25)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 if(POLICY CMP0194)
   cmake_policy(SET CMP0194 NEW)
   set(CMAKE_POLICY_DEFAULT_CMP0194 NEW)
@@ -24,27 +21,36 @@ endif()
 # not be changed
 set(PLUGIN_NAME "flutter_whisper_ggml_plugin")
 
-# The pinned whisper.cpp source ships with the plugin. Set
-# FLUTTER_WHISPER_CPP_DIR only to override it for upstream development.
-set(FLUTTER_WHISPER_CPP_DIR "" CACHE PATH "Path to a whisper.cpp checkout")
-if(NOT FLUTTER_WHISPER_CPP_DIR AND DEFINED ENV{FLUTTER_WHISPER_CPP_DIR})
-  file(TO_CMAKE_PATH "$ENV{FLUTTER_WHISPER_CPP_DIR}" FLUTTER_WHISPER_CPP_DIR)
+set(_fw_prebuilt "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/amd64")
+if(EXISTS "${_fw_prebuilt}/flutter_whisper_plugin.dll")
+  if(NOT EXISTS "${_fw_prebuilt}/flutter_whisper_plugin.lib")
+    message(FATAL_ERROR "The packaged Whisper Windows import library is missing.")
+  endif()
+  if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR CMAKE_GENERATOR_PLATFORM MATCHES "[Aa][Rr][Mm]")
+    message(FATAL_ERROR "The packaged Whisper Windows runtime requires x64.")
+  endif()
+  add_library(${PLUGIN_NAME} SHARED IMPORTED GLOBAL)
+  set_target_properties(${PLUGIN_NAME} PROPERTIES
+    IMPORTED_LOCATION "${_fw_prebuilt}/flutter_whisper_plugin.dll"
+    IMPORTED_IMPLIB "${_fw_prebuilt}/flutter_whisper_plugin.lib"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  set(flutter_whisper_ggml_bundled_libraries "" PARENT_SCOPE)
+  return()
 endif()
-if(NOT FLUTTER_WHISPER_CPP_DIR)
-  file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}" FLUTTER_WHISPER_PLUGIN_WINDOWS_DIR)
-  get_filename_component(
-    FLUTTER_WHISPER_CPP_DIR
-    "${FLUTTER_WHISPER_PLUGIN_WINDOWS_DIR}/../whisper/v1.9.2"
-    ABSOLUTE)
-endif()
-if(NOT EXISTS "${FLUTTER_WHISPER_CPP_DIR}/include/whisper.h")
-  message(FATAL_ERROR
-    "Bundled whisper.cpp v1.9.2 was not found at ${FLUTTER_WHISPER_CPP_DIR}. "
-    "Restore whisper/v1.9.2 or set FLUTTER_WHISPER_CPP_DIR explicitly.")
-endif()
-message(STATUS "flutter_whisper whisper.cpp source: ${FLUTTER_WHISPER_CPP_DIR}")
 
-set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/flutter_whisper_bridge.cpp")
+  message(FATAL_ERROR "The packaged Whisper Windows runtime is missing.")
+endif()
+
+enable_language(C)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/WhisperSource.cmake")
+
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_IS_DEV OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
@@ -135,23 +141,7 @@ target_include_directories(${PLUGIN_NAME} PRIVATE
   "${FLUTTER_WHISPER_CPP_DIR}/ggml/include")
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin whisper)
 
-# List of absolute paths to libraries that should be bundled with the plugin.
-# This list could contain prebuilt libraries, or libraries created by an
-# external build triggered from this build file.
-set(flutter_whisper_ggml_bundled_libraries
-  "$<TARGET_FILE:whisper>"
-  "$<TARGET_FILE:ggml>"
-  "$<TARGET_FILE:ggml-base>"
-  "$<TARGET_FILE:ggml-cpu>"
-)
-if(TARGET ggml-cuda)
-  list(APPEND flutter_whisper_ggml_bundled_libraries "$<TARGET_FILE:ggml-cuda>")
-endif()
-if(TARGET ggml-vulkan)
-  list(APPEND flutter_whisper_ggml_bundled_libraries "$<TARGET_FILE:ggml-vulkan>")
-endif()
-set(flutter_whisper_ggml_bundled_libraries
-  ${flutter_whisper_ggml_bundled_libraries} PARENT_SCOPE)
+set(flutter_whisper_ggml_bundled_libraries "" PARENT_SCOPE)
 
 # === Tests ===
 # These unit tests can be run from a terminal after building the example, or

@@ -22,14 +22,26 @@ rootProject.allprojects {
 
 apply plugin: "com.android.library"
 
+def prebuiltDir = file("src/main/jniLibs")
+def usePrebuilt = prebuiltDir.isDirectory()
+if (usePrebuilt) {
+    ["arm64-v8a", "x86_64"].each { abi ->
+        if (!new File(prebuiltDir, "$abi/libflutter_whisper_plugin.so").isFile()) {
+            throw new GradleException("The packaged Whisper Android runtime is missing $abi.")
+        }
+    }
+} else if (!file("../src/CMakeLists.txt").isFile()) {
+    throw new GradleException("The packaged Whisper Android runtime is missing.")
+}
+
 android {
     namespace = "com.klsruan.flutter_whisper"
     compileSdk = 36
-    ndkVersion = android.ndkVersion
-
-    externalNativeBuild {
-        cmake {
-            path = "../src/CMakeLists.txt"
+    if (!usePrebuilt) {
+        externalNativeBuild {
+            cmake {
+                path = "../src/CMakeLists.txt"
+            }
         }
     }
 
@@ -40,6 +52,13 @@ android {
 
     defaultConfig {
         minSdk = 24
+        if (!usePrebuilt) {
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANDROID_STL=c++_static"
+                }
+            }
+        }
         ndk {
             abiFilters "arm64-v8a", "x86_64"
         }

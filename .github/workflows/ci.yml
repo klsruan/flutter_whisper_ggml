@@ -12,6 +12,8 @@ concurrency:
 
 env:
   FLUTTER_VERSION: 3.38.6
+  WHISPER_VERSION: v1.9.5
+  FLUTTER_WHISPER_CPP_DIR: ${{ github.workspace }}/build/whisper.cpp
   EMSCRIPTEN_VERSION: 4.0.7
 
 jobs:
@@ -47,8 +49,6 @@ jobs:
         run: |
           flutter test
           (cd example && flutter test)
-      - name: Validate pub.dev archive
-        run: dart pub publish --dry-run
 
   android:
     name: Android ARM64 and x86_64
@@ -56,6 +56,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: Clone whisper.cpp
+        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -73,19 +75,50 @@ jobs:
           unzip -l example/build/app/outputs/flutter-apk/app-release.apk > apk-files.txt
           grep -q 'lib/arm64-v8a/libflutter_whisper_plugin.so' apk-files.txt
           grep -q 'lib/x86_64/libflutter_whisper_plugin.so' apk-files.txt
+      - name: Stage Android binaries
+        run: |
+          apk=example/build/app/outputs/flutter-apk/app-release.apk
+          for abi in arm64-v8a x86_64; do
+            directory="build/staged/android/src/main/jniLibs/$abi"
+            mkdir -p "$directory"
+            unzip -p "$apk" "lib/$abi/libflutter_whisper_plugin.so" > "$directory/libflutter_whisper_plugin.so"
+            test -s "$directory/libflutter_whisper_plugin.so"
+          done
+      - name: Verify APK builds with the packaged runtime
+        run: |
+          cp -R build/staged/android/src/main/jniLibs android/src/main/
+          mv build/whisper.cpp build/upstream-source
+          cd example
+          flutter clean
+          flutter build apk --release --target-platform android-arm64,android-x64
+          unzip -l build/app/outputs/flutter-apk/app-release.apk > ../build/prebuilt-apk-files.txt
+          grep -F 'lib/arm64-v8a/libflutter_whisper_plugin.so' ../build/prebuilt-apk-files.txt
+          grep -F 'lib/x86_64/libflutter_whisper_plugin.so' ../build/prebuilt-apk-files.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-android
+          path: build/staged
+          if-no-files-found: error
 
   linux:
     name: Linux ${{ matrix.backend }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         backend: [CPU, VULKAN]
+        include:
+          - backend: CPU
+            runner: ubuntu-22.04
+          - backend: VULKAN
+            runner: ubuntu-24.04
     env:
       FLUTTER_WHISPER_GPU_BACKEND: ${{ matrix.backend }}
     steps:
       - uses: actions/checkout@v4
+      - name: Clone whisper.cpp
+        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
@@ -107,6 +140,26 @@ jobs:
           test -s example/build/linux/x64/release/bundle/lib/libflutter_whisper_plugin.so
           nm -D example/build/linux/x64/release/bundle/lib/libflutter_whisper_plugin.so \
             | grep -q ' fw_create'
+      - name: Stage Linux binary
+        run: |
+          directory="build/staged/linux/prebuilt/x86_64/${{ matrix.backend }}"
+          mkdir -p "$directory"
+          cp example/build/linux/x64/release/bundle/lib/libflutter_whisper_plugin.so "$directory/"
+          strip --strip-unneeded "$directory/libflutter_whisper_plugin.so"
+      - name: Verify Linux bundles the packaged runtime
+        run: |
+          cp -R build/staged/linux/prebuilt linux/
+          mv build/whisper.cpp build/upstream-source
+          cd example
+          flutter clean
+          flutter build linux --release
+          cmp ../linux/prebuilt/x86_64/${{ matrix.backend }}/libflutter_whisper_plugin.so \
+            build/linux/x64/release/bundle/lib/libflutter_whisper_plugin.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-linux-${{ matrix.backend }}
+          path: build/staged
+          if-no-files-found: error
 
   windows:
     name: Windows x64 CPU
@@ -116,6 +169,8 @@ jobs:
       FLUTTER_WHISPER_GPU_BACKEND: CPU
     steps:
       - uses: actions/checkout@v4
+      - name: Clone whisper.cpp
+        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -136,6 +191,32 @@ jobs:
           if (-not (Get-ChildItem $release -Filter 'flutter_whisper_plugin.dll' -Recurse)) {
             throw 'flutter_whisper_plugin.dll was not bundled.'
           }
+      - name: Stage Windows binaries
+        shell: pwsh
+        run: |
+          $directory = New-Item -ItemType Directory -Force build/staged/windows/prebuilt/amd64
+          Copy-Item example/build/windows/x64/runner/Release/flutter_whisper_plugin.dll $directory.FullName
+          $importLibrary = Get-ChildItem example/build/windows/x64/plugins/flutter_whisper_ggml -Filter flutter_whisper_plugin.lib -Recurse | Select-Object -First 1
+          if (-not $importLibrary) { throw 'The Whisper import library was not generated.' }
+          Copy-Item $importLibrary.FullName $directory.FullName
+      - name: Verify Windows links the packaged runtime
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse build/staged/windows/prebuilt windows/
+          Move-Item -LiteralPath build/whisper.cpp -Destination build/upstream-source
+          Set-Location example
+          flutter clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter build windows --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bundled = Get-FileHash build/windows/x64/runner/Release/flutter_whisper_plugin.dll
+          $prebuilt = Get-FileHash ../windows/prebuilt/amd64/flutter_whisper_plugin.dll
+          if ($bundled.Hash -ne $prebuilt.Hash) { throw 'The prebuilt DLL was not bundled.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-windows
+          path: build/staged
+          if-no-files-found: error
 
   web:
     name: Web and whisper.cpp WebAssembly
@@ -143,6 +224,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: Clone whisper.cpp
+        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -184,18 +267,35 @@ jobs:
           test -s "${WEB_PLUGIN_ASSETS}/flutter_whisper.wasm"
           test -s "${WEB_PLUGIN_ASSETS}/flutter_whisper_worker.js"
           grep -q 'Cross-Origin-Opener-Policy' example/build/web/_headers
+      - name: Stage WebAssembly and loader
+        run: |
+          mkdir -p build/staged/assets/web
+          cp assets/web/flutter_whisper.{js,wasm} build/staged/assets/web/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-web
+          path: build/staged
+          if-no-files-found: error
 
   apple:
     name: iOS and macOS
     runs-on: macos-15
+    env:
+      FLUTTER_WHISPER_GPU_BACKEND: CPU
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: Clone whisper.cpp
+        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+      - name: Build Apple XCFrameworks
+        run: |
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+          bash tool/build_apple.sh
       - name: Resolve dependencies
         run: flutter pub get --directory example
       - name: Build iOS Simulator
@@ -207,3 +307,78 @@ jobs:
       - name: Build macOS release bundle
         working-directory: example
         run: flutter build macos --release
+      - name: Verify Apple FFI exports
+        run: |
+          for binary in \
+            example/build/ios/iphoneos/Runner.app/Runner \
+            example/build/ios/iphonesimulator/Runner.app/Runner \
+            example/build/macos/Build/Products/Release/flutter_whisper_ggml_example.app/Contents/MacOS/flutter_whisper_ggml_example; do
+            if [[ -f "$binary.debug.dylib" ]]; then
+              binary="$binary.debug.dylib"
+            fi
+            nm -gU "$binary" | grep " _fw_create$"
+            nm -gU "$binary" | grep " _fw_last_error$"
+          done
+      - name: Stage Apple XCFrameworks
+        run: |
+          mkdir -p build/staged/{ios,macos}
+          cp -R ios/*.xcframework build/staged/ios/
+          cp -R macos/*.xcframework build/staged/macos/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-apple
+          path: build/staged
+          if-no-files-found: error
+
+  package:
+    name: Assemble and validate pub.dev package
+    needs: [quality, android, linux, windows, web, apple]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Stage Flutter package files
+        shell: bash
+        run: |
+          mkdir -p build/pub-package
+          git ls-files -z -- . ':!.github' ':!src' ':!cmake' ':!web' ':!tool' ':!windows/*.cpp' ':!windows/flutter_whisper_plugin.h' ':!windows/test' ':!test/ci_cd_structure_test.dart' ':!test/native_platform_structure_test.dart' ':!windows/include/flutter_whisper/flutter_whisper_bridge.h' \
+            | tar --null -T - -cf - \
+            | tar -xf - -C build/pub-package
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: whisper-*
+          path: build/pub-package
+          merge-multiple: true
+      - name: Validate pub.dev archive
+        shell: bash
+        working-directory: build/pub-package
+        run: |
+          for file in \
+            windows/prebuilt/amd64/flutter_whisper_plugin.{dll,lib} \
+            linux/prebuilt/x86_64/{CPU,VULKAN}/libflutter_whisper_plugin.so \
+            android/src/main/jniLibs/{arm64-v8a,x86_64}/libflutter_whisper_plugin.so \
+            {ios,macos}/flutter_whisper_ggml_native.xcframework/Info.plist \
+            assets/web/flutter_whisper.{js,wasm}; do
+            test -s "$file"
+          done
+          test ! -e whisper
+          flutter pub get
+          dart pub publish --dry-run | tee ../pub-dry-run.txt
+          for file in \
+            flutter_whisper_plugin.dll flutter_whisper_plugin.lib libflutter_whisper_plugin.so \
+            libflutter_whisper_ggml_native.a flutter_whisper.wasm; do
+            grep -F "$file" ../pub-dry-run.txt
+          done
+      - name: Archive package for publishing
+        run: |
+          tar -czf build/flutter_whisper_ggml-pub-package.tar.gz -C build/pub-package \
+            --exclude=.dart_tool --exclude=pubspec.lock .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flutter_whisper_ggml-pub-package
+          path: build/flutter_whisper_ggml-pub-package.tar.gz
+          if-no-files-found: error
