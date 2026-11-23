@@ -19,6 +19,7 @@ if(NOT FLUTTER_WHISPER_CPP_DIR)
     GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
     GIT_TAG v1.9.5
     GIT_SHALLOW TRUE
+    GIT_CONFIG core.longpaths=true
     UPDATE_DISCONNECTED TRUE)
   FetchContent_GetProperties(flutter_whisper_upstream)
   if(NOT flutter_whisper_upstream_POPULATED)

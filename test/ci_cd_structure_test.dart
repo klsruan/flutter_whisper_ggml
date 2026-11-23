@@ -13,7 +13,7 @@ void main() {
     expect(ci, contains('flutter build web --release'));
     expect(ci, contains('backend: [CPU, VULKAN]'));
     expect(ci, contains('spirv-headers'));
-    expect(ci, contains('libomp-dev'));
+    expect(ci, contains("if: matrix.backend == 'VULKAN'"));
     expect(ci, contains('flutter build ios --simulator'));
     expect(ci, contains('flutter build ios --release --no-codesign'));
     expect(ci, contains('flutter build macos --release'));
@@ -48,6 +48,8 @@ void main() {
     expect(ci, contains('WHISPER_VERSION: v1.9.5'));
     expect(ci, contains('git clone --depth 1 --branch'));
     expect(ci, contains('/build/whisper.cpp'));
+    expect(ci, contains(r'"$FLUTTER_WHISPER_CPP_DIR"'));
+    expect(ci, contains("java-version: '17'"));
     expect(ci, contains('dart pub publish --dry-run'));
     expect(ci, contains('flutter_whisper_ggml-pub-package'));
     expect(File('LICENSE-whisper.cpp').existsSync(), isTrue);

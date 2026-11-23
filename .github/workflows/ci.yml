@@ -57,12 +57,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Clone whisper.cpp
-        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$WHISPER_VERSION" -c core.longpaths=true https://github.com/ggml-org/whisper.cpp.git "$FLUTTER_WHISPER_CPP_DIR"
+          test -s "$FLUTTER_WHISPER_CPP_DIR/include/whisper.h"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+      - name: Select the CI JDK for Flutter
+        run: flutter config --jdk-dir="$JAVA_HOME"
       - name: Resolve dependencies
         run: flutter pub get --directory example
       - name: Build release APK
@@ -87,7 +96,7 @@ jobs:
       - name: Verify APK builds with the packaged runtime
         run: |
           cp -R build/staged/android/src/main/jniLibs android/src/main/
-          mv build/whisper.cpp build/upstream-source
+          mv "$FLUTTER_WHISPER_CPP_DIR" build/upstream-source
           cd example
           flutter clean
           flutter build apk --release --target-platform android-arm64,android-x64
@@ -118,13 +127,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Clone whisper.cpp
-        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$WHISPER_VERSION" -c core.longpaths=true https://github.com/ggml-org/whisper.cpp.git "$FLUTTER_WHISPER_CPP_DIR"
+          test -s "$FLUTTER_WHISPER_CPP_DIR/include/whisper.h"
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
-            libomp-dev libvulkan-dev glslc spirv-headers spirv-tools
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - name: Install Vulkan build dependencies
+        if: matrix.backend == 'VULKAN'
+        run: sudo apt-get install -y libvulkan-dev glslc spirv-headers spirv-tools
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -149,7 +163,7 @@ jobs:
       - name: Verify Linux bundles the packaged runtime
         run: |
           cp -R build/staged/linux/prebuilt linux/
-          mv build/whisper.cpp build/upstream-source
+          mv "$FLUTTER_WHISPER_CPP_DIR" build/upstream-source
           cd example
           flutter clean
           flutter build linux --release
@@ -170,7 +184,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Clone whisper.cpp
-        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$WHISPER_VERSION" -c core.longpaths=true https://github.com/ggml-org/whisper.cpp.git "$FLUTTER_WHISPER_CPP_DIR"
+          test -s "$FLUTTER_WHISPER_CPP_DIR/include/whisper.h"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -203,7 +220,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Recurse build/staged/windows/prebuilt windows/
-          Move-Item -LiteralPath build/whisper.cpp -Destination build/upstream-source
+          Move-Item -LiteralPath $env:FLUTTER_WHISPER_CPP_DIR -Destination build/upstream-source
           Set-Location example
           flutter clean
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -225,7 +242,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Clone whisper.cpp
-        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$WHISPER_VERSION" -c core.longpaths=true https://github.com/ggml-org/whisper.cpp.git "$FLUTTER_WHISPER_CPP_DIR"
+          test -s "$FLUTTER_WHISPER_CPP_DIR/include/whisper.h"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -286,7 +306,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Clone whisper.cpp
-        run: git clone --depth 1 --branch "${{ env.WHISPER_VERSION }}" https://github.com/ggml-org/whisper.cpp.git "whisper/${{ env.WHISPER_VERSION }}"
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$WHISPER_VERSION" -c core.longpaths=true https://github.com/ggml-org/whisper.cpp.git "$FLUTTER_WHISPER_CPP_DIR"
+          test -s "$FLUTTER_WHISPER_CPP_DIR/include/whisper.h"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
